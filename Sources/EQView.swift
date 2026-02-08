@@ -76,6 +76,30 @@ struct EQView: View {
                     .frame(width: 36, alignment: .trailing)
                     .monospacedDigit()
             }
+            HStack {
+                Text("Pre").frame(width: 50, alignment: .leading)
+                Toggle("Auto", isOn: Binding(
+                    get: { engine.autoPreamp },
+                    set: { newVal in
+                        engine.autoPreamp = newVal
+                        if newVal { engine.computeAutoPreamp() }
+                    }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                if engine.autoPreamp {
+                    Spacer()
+                } else {
+                    Slider(value: Binding(
+                        get: { engine.preamp },
+                        set: { engine.setPreamp(Float($0)) }
+                    ), in: -24...12, step: 0.5)
+                }
+                Text(String(format: "%+.1f dB", engine.preamp))
+                    .frame(width: 56, alignment: .trailing)
+                    .monospacedDigit()
+                    .font(.caption)
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 6)

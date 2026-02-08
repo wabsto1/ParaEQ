@@ -130,4 +130,10 @@ enum FrequencyResponse {
         let freqs = logFrequencies(count: pointCount)
         return freqs.map { magnitudeDB(for: band, atFrequency: $0) }
     }
+
+    /// Peak combined gain in dB across the audible range (used for auto-preamp).
+    static func peakGainDB(for bands: [EQBand]) -> Float {
+        let curve = responseCurve(for: bands, pointCount: 200)
+        return Float(curve.max() ?? 0)
+    }
 }

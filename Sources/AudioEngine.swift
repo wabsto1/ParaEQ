@@ -65,8 +65,9 @@ private final class InputCBCtx {
 /// Passed to the EQ input render callback (ring buffer → EQ)
 private final class EQInputCtx {
     let ringL: FloatRingBuffer, ringR: FloatRingBuffer
-    init(ringL: FloatRingBuffer, ringR: FloatRingBuffer) {
-        self.ringL = ringL; self.ringR = ringR
+    let preampPtr: UnsafeMutablePointer<Float>
+    init(ringL: FloatRingBuffer, ringR: FloatRingBuffer, preampPtr: UnsafeMutablePointer<Float>) {
+        self.ringL = ringL; self.ringR = ringR; self.preampPtr = preampPtr
     }
 }
 
@@ -116,13 +117,16 @@ private func eqInputCB(
     let c = Unmanaged<EQInputCtx>.fromOpaque(ref).takeUnretainedValue()
     let abl = UnsafeMutableAudioBufferListPointer(ioData)
     let n = Int(frames)
+    let preamp = c.preampPtr.pointee
     if abl.count >= 1, let p = abl[0].mData?.assumingMemoryBound(to: Float.self) {
         let got = c.ringL.read(p, count: n)
         if got < n { p.advanced(by: got).initialize(repeating: 0, count: n - got) }
+        if preamp != 1.0 { for j in 0..<n { p[j] *= preamp } }
     }
     if abl.count >= 2, let p = abl[1].mData?.assumingMemoryBound(to: Float.self) {
         let got = c.ringR.read(p, count: n)
         if got < n { p.advanced(by: got).initialize(repeating: 0, count: n - got) }
+        if preamp != 1.0 { for j in 0..<n { p[j] *= preamp } }
     }
     return noErr
 }
@@ -141,13 +145,17 @@ private func outputCB(
     var renderFlags = AudioUnitRenderActionFlags(rawValue: 0)
     let s = AudioUnitRender(c.eqUnit, &renderFlags, ts, 0, frames, ioData)
 
-    // Apply volume
-    let vol = c.volumePtr.pointee
-    if s == noErr, vol < 1.0 {
+    // Apply volume and hard limiter
+    if s == noErr {
+        let vol = c.volumePtr.pointee
         let abl = UnsafeMutableAudioBufferListPointer(ioData)
         for i in 0..<Int(abl.count) {
             if let p = abl[i].mData?.assumingMemoryBound(to: Float.self) {
-                for j in 0..<Int(frames) { p[j] *= vol }
+                for j in 0..<Int(frames) {
+                    var x = p[j] * vol
+                    if x > 1.0 { x = 1.0 } else if x < -1.0 { x = -1.0 }
+                    p[j] = x
+                }
             }
         }
     }
@@ -163,6 +171,8 @@ final class AudioEngine {
     var selectedInput: AudioDevice?
     var selectedOutput: AudioDevice?
     var volume: Float = 1.0
+    var preamp: Float = 0            // dB, auto-calculated or manual
+    var autoPreamp: Bool = true
     var errorMessage: String?
 
     private var inputUnit: AudioUnit?
@@ -171,6 +181,7 @@ final class AudioEngine {
     private var ringL: FloatRingBuffer?
     private var ringR: FloatRingBuffer?
     private var volumePtr: UnsafeMutablePointer<Float>?
+    private var preampLinearPtr: UnsafeMutablePointer<Float>?
     private var inputCtx: Unmanaged<InputCBCtx>?
     private var eqCtx: Unmanaged<EQInputCtx>?
     private var outputCtx: Unmanaged<OutputCBCtx>?
@@ -211,6 +222,9 @@ final class AudioEngine {
             ringR = FloatRingBuffer(capacity: 16_384)
             volumePtr = .allocate(capacity: 1)
             volumePtr!.initialize(to: volume)
+            preampLinearPtr = .allocate(capacity: 1)
+            if autoPreamp { computeAutoPreamp() }
+            preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
 
             try setupInputAU(device: input.id, sampleRate: rate)
             try setupEQ(sampleRate: rate)
@@ -257,9 +271,13 @@ final class AudioEngine {
         AudioUnitSetParameter(eq, 5000 + i, kAudioUnitScope_Global, 0, b.bandwidth, 0)
         AudioUnitSetParameter(eq, 1000 + i, kAudioUnitScope_Global, 0,
             b.enabled ? 0 : 1, 0)
+        if autoPreamp { computeAutoPreamp() }
     }
 
-    func applyAllBands() { for i in bands.indices { applyBand(at: i) } }
+    func applyAllBands() {
+        for i in bands.indices { applyBand(at: i) }
+        if autoPreamp { computeAutoPreamp() }
+    }
 
     func applyPreset(_ preset: EQPreset) {
         guard preset.bands.count == bands.count else { return }
@@ -272,6 +290,19 @@ final class AudioEngine {
         volumePtr?.pointee = v
     }
 
+    func setPreamp(_ dB: Float) {
+        preamp = dB
+        preampLinearPtr?.pointee = powf(10.0, dB / 20.0)
+    }
+
+    /// Compute preamp reduction so EQ peak boost stays at 0 dB.
+    func computeAutoPreamp() {
+        let peakDB = FrequencyResponse.peakGainDB(for: bands)
+        let newPreamp = peakDB > 0 ? -peakDB : Float(0)
+        preamp = newPreamp
+        preampLinearPtr?.pointee = powf(10.0, newPreamp / 20.0)
+    }
+
     // MARK: - Persistence
 
     func saveState() {
@@ -279,6 +310,8 @@ final class AudioEngine {
             UserDefaults.standard.set(data, forKey: "paraeq.bands")
         }
         UserDefaults.standard.set(volume, forKey: "paraeq.volume")
+        UserDefaults.standard.set(autoPreamp, forKey: "paraeq.autoPreamp")
+        if !autoPreamp { UserDefaults.standard.set(preamp, forKey: "paraeq.preamp") }
         if let uid = selectedOutput?.uid {
             UserDefaults.standard.set(uid, forKey: "paraeq.outputUID")
         }
@@ -290,6 +323,12 @@ final class AudioEngine {
            saved.count == bands.count { bands = saved }
         let v = UserDefaults.standard.float(forKey: "paraeq.volume")
         if v > 0 { volume = v }
+        if UserDefaults.standard.object(forKey: "paraeq.autoPreamp") != nil {
+            autoPreamp = UserDefaults.standard.bool(forKey: "paraeq.autoPreamp")
+        }
+        if !autoPreamp {
+            preamp = UserDefaults.standard.float(forKey: "paraeq.preamp")
+        }
         if let uid = UserDefaults.standard.string(forKey: "paraeq.outputUID") {
             selectedOutput = AudioDeviceManager.outputDevices().first { $0.uid == uid }
                 ?? selectedOutput
@@ -365,7 +404,7 @@ final class AudioEngine {
             UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
 
         // EQ pulls input from ring buffer via render callback
-        let ctx = EQInputCtx(ringL: ringL!, ringR: ringR!)
+        let ctx = EQInputCtx(ringL: ringL!, ringR: ringR!, preampPtr: preampLinearPtr!)
         let um = Unmanaged.passRetained(ctx)
         eqCtx = um
 
@@ -459,6 +498,7 @@ final class AudioEngine {
         outputCtx?.release(); outputCtx = nil
         ringL = nil; ringR = nil
         if let p = volumePtr { p.deallocate(); volumePtr = nil }
+        if let p = preampLinearPtr { p.deallocate(); preampLinearPtr = nil }
     }
 
     private func restoreSystemDevices() {
