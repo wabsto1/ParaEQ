@@ -20,7 +20,7 @@ struct EQView: View {
             Divider()
             footerSection
         }
-        .frame(width: 420)
+        .frame(width: 440, height: 680)
     }
 
     // MARK: - Header
@@ -143,7 +143,6 @@ struct EQView: View {
                 }
             }
         }
-        .frame(maxHeight: 250)
     }
 
     private func bandBinding(_ i: Int) -> Binding<EQBand> {
