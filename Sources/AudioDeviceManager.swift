@@ -54,8 +54,26 @@ enum AudioDeviceManager {
     }
 
     static func defaultOutputDeviceID() -> AudioDeviceID? {
+        deviceID(forSelector: kAudioHardwarePropertyDefaultOutputDevice)
+    }
+
+    static func defaultInputDeviceID() -> AudioDeviceID? {
+        deviceID(forSelector: kAudioHardwarePropertyDefaultInputDevice)
+    }
+
+    @discardableResult
+    static func setDefaultOutputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        setDevice(deviceID, forSelector: kAudioHardwarePropertyDefaultOutputDevice)
+    }
+
+    @discardableResult
+    static func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        setDevice(deviceID, forSelector: kAudioHardwarePropertyDefaultInputDevice)
+    }
+
+    private static func deviceID(forSelector selector: AudioObjectPropertySelector) -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -67,10 +85,9 @@ enum AudioDeviceManager {
         return deviceID
     }
 
-    @discardableResult
-    static func setDefaultOutputDevice(_ deviceID: AudioDeviceID) -> Bool {
+    private static func setDevice(_ deviceID: AudioDeviceID, forSelector selector: AudioObjectPropertySelector) -> Bool {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -107,6 +124,30 @@ enum AudioDeviceManager {
             deviceID, &address, 0, nil,
             UInt32(MemoryLayout<Float64>.size), &rate
         ) == noErr
+    }
+
+    // MARK: - Aggregate device
+
+    static func createAggregateDevice(inputUID: String, outputUID: String) -> AudioDeviceID? {
+        let desc: [String: Any] = [
+            kAudioAggregateDeviceNameKey as String: "ParaEQ",
+            kAudioAggregateDeviceUIDKey as String: "com.paraeq.aggregate.\(UUID().uuidString)",
+            kAudioAggregateDeviceIsPrivateKey as String: true,
+            kAudioAggregateDeviceSubDeviceListKey as String: [
+                [kAudioSubDeviceUIDKey as String: outputUID],
+                [kAudioSubDeviceUIDKey as String: inputUID],
+            ],
+            kAudioAggregateDeviceMasterSubDeviceKey as String: outputUID,
+        ]
+
+        var aggregateID: AudioDeviceID = 0
+        let status = AudioHardwareCreateAggregateDevice(desc as CFDictionary, &aggregateID)
+        guard status == noErr else { return nil }
+        return aggregateID
+    }
+
+    static func destroyAggregateDevice(_ deviceID: AudioDeviceID) {
+        AudioHardwareDestroyAggregateDevice(deviceID)
     }
 
     // MARK: - Private helpers

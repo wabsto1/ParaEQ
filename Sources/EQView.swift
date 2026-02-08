@@ -14,6 +14,8 @@ struct EQView: View {
             Divider()
             presetSection
             Divider()
+            FrequencyResponseView(bands: engine.bands)
+            Divider()
             bandList
             Divider()
             footerSection
@@ -141,7 +143,7 @@ struct EQView: View {
                 }
             }
         }
-        .frame(maxHeight: 380)
+        .frame(maxHeight: 250)
     }
 
     private func bandBinding(_ i: Int) -> Binding<EQBand> {
