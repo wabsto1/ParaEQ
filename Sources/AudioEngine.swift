@@ -75,8 +75,12 @@ private final class EQInputCtx {
 private final class OutputCBCtx {
     let eqUnit: AudioUnit
     let volumePtr: UnsafeMutablePointer<Float>
-    init(eqUnit: AudioUnit, volumePtr: UnsafeMutablePointer<Float>) {
+    let peakLPtr: UnsafeMutablePointer<Float>
+    let peakRPtr: UnsafeMutablePointer<Float>
+    init(eqUnit: AudioUnit, volumePtr: UnsafeMutablePointer<Float>,
+         peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>) {
         self.eqUnit = eqUnit; self.volumePtr = volumePtr
+        self.peakLPtr = peakLPtr; self.peakRPtr = peakRPtr
     }
 }
 
@@ -145,17 +149,23 @@ private func outputCB(
     var renderFlags = AudioUnitRenderActionFlags(rawValue: 0)
     let s = AudioUnitRender(c.eqUnit, &renderFlags, ts, 0, frames, ioData)
 
-    // Apply volume and hard limiter
+    // Apply volume, hard limiter, and track peak levels
     if s == noErr {
         let vol = c.volumePtr.pointee
         let abl = UnsafeMutableAudioBufferListPointer(ioData)
         for i in 0..<Int(abl.count) {
             if let p = abl[i].mData?.assumingMemoryBound(to: Float.self) {
+                var peak: Float = 0
                 for j in 0..<Int(frames) {
                     var x = p[j] * vol
                     if x > 1.0 { x = 1.0 } else if x < -1.0 { x = -1.0 }
                     p[j] = x
+                    let abs = x < 0 ? -x : x
+                    if abs > peak { peak = abs }
                 }
+                // Store max peak per channel (atomically safe for single-writer float)
+                let ptr = i == 0 ? c.peakLPtr : c.peakRPtr
+                if peak > ptr.pointee { ptr.pointee = peak }
             }
         }
     }
@@ -174,6 +184,8 @@ final class AudioEngine {
     var preamp: Float = 0            // dB, auto-calculated or manual
     var autoPreamp: Bool = true
     var errorMessage: String?
+    var peakL: Float = 0
+    var peakR: Float = 0
 
     private var inputUnit: AudioUnit?
     private var outputUnit: AudioUnit?
@@ -182,9 +194,12 @@ final class AudioEngine {
     private var ringR: FloatRingBuffer?
     private var volumePtr: UnsafeMutablePointer<Float>?
     private var preampLinearPtr: UnsafeMutablePointer<Float>?
+    private var peakLPtr: UnsafeMutablePointer<Float>?
+    private var peakRPtr: UnsafeMutablePointer<Float>?
     private var inputCtx: Unmanaged<InputCBCtx>?
     private var eqCtx: Unmanaged<EQInputCtx>?
     private var outputCtx: Unmanaged<OutputCBCtx>?
+    private var meterTimer: Timer?
     private var previousSystemOutputID: AudioDeviceID?
     private var previousSystemInputID: AudioDeviceID?
 
@@ -222,6 +237,10 @@ final class AudioEngine {
             ringR = FloatRingBuffer(capacity: 16_384)
             volumePtr = .allocate(capacity: 1)
             volumePtr!.initialize(to: volume)
+            peakLPtr = .allocate(capacity: 1)
+            peakLPtr!.initialize(to: 0)
+            peakRPtr = .allocate(capacity: 1)
+            peakRPtr!.initialize(to: 0)
             preampLinearPtr = .allocate(capacity: 1)
             if autoPreamp { computeAutoPreamp() }
             preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
@@ -241,6 +260,7 @@ final class AudioEngine {
 
             isRunning = true
             errorMessage = nil
+            startMeterTimer()
         } catch {
             teardown()
             restoreSystemDevices()
@@ -249,10 +269,12 @@ final class AudioEngine {
     }
 
     func stop() {
+        meterTimer?.invalidate(); meterTimer = nil
         if let u = inputUnit { AudioOutputUnitStop(u) }
         if let u = outputUnit { AudioOutputUnitStop(u) }
         teardown()
         isRunning = false
+        peakL = 0; peakR = 0
         restoreSystemDevices()
         saveState()
     }
@@ -282,6 +304,10 @@ final class AudioEngine {
     func applyPreset(_ preset: EQPreset) {
         guard preset.bands.count == bands.count else { return }
         bands = preset.bands
+        if let p = preset.preamp {
+            autoPreamp = false
+            setPreamp(p)
+        }
         applyAllBands()
     }
 
@@ -332,6 +358,18 @@ final class AudioEngine {
         if let uid = UserDefaults.standard.string(forKey: "paraeq.outputUID") {
             selectedOutput = AudioDeviceManager.outputDevices().first { $0.uid == uid }
                 ?? selectedOutput
+        }
+    }
+
+    // MARK: - Peak meter polling
+
+    private func startMeterTimer() {
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self, let lp = self.peakLPtr, let rp = self.peakRPtr else { return }
+            let rawL = lp.pointee; lp.pointee = 0
+            let rawR = rp.pointee; rp.pointee = 0
+            self.peakL = max(rawL, self.peakL * 0.85)
+            self.peakR = max(rawR, self.peakR * 0.85)
         }
     }
 
@@ -439,7 +477,8 @@ final class AudioEngine {
             UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
 
         // Output pulls from EQ via render callback
-        let ctx = OutputCBCtx(eqUnit: eqUnit!, volumePtr: volumePtr!)
+        let ctx = OutputCBCtx(eqUnit: eqUnit!, volumePtr: volumePtr!,
+                              peakLPtr: peakLPtr!, peakRPtr: peakRPtr!)
         let um = Unmanaged.passRetained(ctx)
         outputCtx = um
 
@@ -499,6 +538,8 @@ final class AudioEngine {
         ringL = nil; ringR = nil
         if let p = volumePtr { p.deallocate(); volumePtr = nil }
         if let p = preampLinearPtr { p.deallocate(); preampLinearPtr = nil }
+        if let p = peakLPtr { p.deallocate(); peakLPtr = nil }
+        if let p = peakRPtr { p.deallocate(); peakRPtr = nil }
     }
 
     private func restoreSystemDevices() {

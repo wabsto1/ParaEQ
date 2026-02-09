@@ -72,6 +72,11 @@ struct EQPreset: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var bands: [EQBand]
+    var preamp: Float?
+
+    var isBuiltIn: Bool {
+        Self.builtIn.contains { $0.id == id }
+    }
 
     static let builtIn: [EQPreset] = [flat, bassBoost, vocalClarity, trebleBoost, t5pHarman, t5pBassBoost]
 

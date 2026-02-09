@@ -1,14 +1,24 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct EQView: View {
     @Bindable var engine: AudioEngine
+    @State private var presetManager = PresetManager()
 
     var body: some View {
         VStack(spacing: 0) {
             headerSection
             Divider()
             deviceSection
+            if engine.isRunning {
+                LevelMeterView(peakL: engine.peakL, peakR: engine.peakR)
+                    .padding(.horizontal)
+                    .padding(.bottom, 6)
+            }
             if let msg = warningMessage {
+                warningBanner(msg)
+            }
+            if let msg = importWarning {
                 warningBanner(msg)
             }
             Divider()
@@ -117,6 +127,8 @@ struct EQView: View {
         return nil
     }
 
+    @State private var importWarning: String?
+
     private func warningBanner(_ msg: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -130,6 +142,8 @@ struct EQView: View {
     // MARK: - Presets
 
     @State private var selectedPresetID: String = "flat"
+    @State private var showingSavePopover = false
+    @State private var newPresetName = ""
 
     private var presetSection: some View {
         HStack {
@@ -138,16 +152,115 @@ struct EQView: View {
                 ForEach(EQPreset.builtIn) { p in
                     Text(p.name).tag(p.id)
                 }
+                if !presetManager.customPresets.isEmpty {
+                    Divider()
+                    ForEach(presetManager.customPresets) { p in
+                        Text(p.name).tag(p.id)
+                    }
+                }
             }
             .labelsHidden()
             .onChange(of: selectedPresetID) { _, newID in
-                if let preset = EQPreset.builtIn.first(where: { $0.id == newID }) {
+                if let preset = presetManager.allPresets.first(where: { $0.id == newID }) {
                     engine.applyPreset(preset)
                 }
+            }
+
+            // Save button
+            Button {
+                newPresetName = ""
+                showingSavePopover = true
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .buttonStyle(.borderless)
+            .popover(isPresented: $showingSavePopover) {
+                VStack(spacing: 8) {
+                    Text("Save Preset").font(.headline)
+                    TextField("Name", text: $newPresetName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 180)
+                    HStack {
+                        Button("Cancel") { showingSavePopover = false }
+                        Button("Save") {
+                            let name = newPresetName.trimmingCharacters(in: .whitespaces)
+                            guard !name.isEmpty else { return }
+                            let preampVal: Float? = engine.autoPreamp ? nil : engine.preamp
+                            presetManager.save(name: name, bands: engine.bands, preamp: preampVal)
+                            selectedPresetID = presetManager.customPresets.last!.id
+                            showingSavePopover = false
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(newPresetName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                .padding()
+            }
+
+            // Import button
+            Button {
+                openImportPanel()
+            } label: {
+                Image(systemName: "doc.badge.plus")
+            }
+            .buttonStyle(.borderless)
+
+            // Delete button (only for custom presets)
+            if let selected = presetManager.customPresets.first(where: { $0.id == selectedPresetID }) {
+                Button {
+                    presetManager.delete(selected)
+                    selectedPresetID = "flat"
+                    engine.applyPreset(.flat)
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.borderless)
             }
         }
         .padding(.horizontal)
         .padding(.vertical, 6)
+    }
+
+    // MARK: - Import handling
+
+    private func openImportPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Import AutoEQ Profile"
+        panel.allowedContentTypes = [.plainText]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.level = .floating
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        importWarning = nil
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            importWarning = "Could not read file"
+            return
+        }
+
+        let parsed = AutoEQParser.parse(text)
+        if parsed.bands.isEmpty {
+            importWarning = "No filters found in file"
+            return
+        }
+
+        let normalized = parsed.normalized(to: 10)
+        if parsed.originalCount > 10 {
+            importWarning = "Imported \(parsed.originalCount) filters, truncated to 10"
+        }
+
+        let name = url.deletingPathExtension().lastPathComponent
+        let preset = EQPreset(
+            id: UUID().uuidString,
+            name: name,
+            bands: normalized.bands,
+            preamp: normalized.preamp
+        )
+        presetManager.addImported(preset)
+        selectedPresetID = preset.id
+        engine.applyPreset(preset)
     }
 
     // MARK: - Band list
