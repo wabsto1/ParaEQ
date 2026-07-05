@@ -1,4 +1,4 @@
-import AVFoundation
+import Foundation
 
 // MARK: - Filter Type
 
@@ -25,17 +25,6 @@ enum FilterType: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    var avType: AVAudioUnitEQFilterType {
-        switch self {
-        case .parametric: .parametric
-        case .lowShelf: .lowShelf
-        case .highShelf: .highShelf
-        case .lowPass: .lowPass
-        case .highPass: .highPass
-        case .bandPass: .bandPass
-        case .bandStop: .bandStop
-        }
-    }
 }
 
 // MARK: - EQ Band
@@ -46,12 +35,6 @@ struct EQBand: Codable, Equatable {
     var q: Float = 1.41          // 0.1 to 30
     var filterType: FilterType = .parametric
     var enabled: Bool = true
-
-    /// Convert Q to bandwidth in octaves for AVAudioUnitEQ
-    var bandwidth: Float {
-        let q = max(0.01, Double(self.q))
-        return Float(2.0 * asinh(1.0 / (2.0 * q)) / log(2.0))
-    }
 
     var frequencyLabel: String {
         if frequency >= 1000 {

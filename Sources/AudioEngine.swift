@@ -1,6 +1,5 @@
 import AppKit
 import AudioToolbox
-import AVFoundation
 import CoreAudio
 import Observation
 
@@ -30,27 +29,26 @@ enum EngineLog {
 
 // MARK: - Realtime context (no allocation on the IO thread)
 
-/// Shared with the aggregate-device IOProc and the EQ's pull callback.
-/// The IOProc stages tap input as planar audio, renders the EQ (which pulls
-/// the staged audio through `eqInputCB`), and writes the result to the
-/// device output buffers.
+/// Shared with the aggregate-device IOProc. The IOProc stages tap input as
+/// planar audio (applying preamp), runs the biquad chain, and writes the
+/// result to the device output buffers.
 private final class IOCtx {
-    let eqUnit: AudioUnit
+    let eq: BiquadEQ
     let maxFrames: Int
     let stageL: UnsafeMutablePointer<Float>
     let stageR: UnsafeMutablePointer<Float>
-    var stagedFrames: Int = 0
-    let eqABL: UnsafeMutablePointer<AudioBufferList>
+    let outL: UnsafeMutablePointer<Float>
+    let outR: UnsafeMutablePointer<Float>
     let preampPtr: UnsafeMutablePointer<Float>
     let volumePtr: UnsafeMutablePointer<Float>
     let peakLPtr: UnsafeMutablePointer<Float>
     let peakRPtr: UnsafeMutablePointer<Float>
     var callbackCount: UInt64 = 0
 
-    init(eqUnit: AudioUnit, maxFrames: Int,
+    init(eq: BiquadEQ, maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
          peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>) {
-        self.eqUnit = eqUnit
+        self.eq = eq
         self.maxFrames = maxFrames
         self.preampPtr = preampPtr
         self.volumePtr = volumePtr
@@ -60,45 +58,18 @@ private final class IOCtx {
         stageL.initialize(repeating: 0, count: maxFrames)
         stageR = .allocate(capacity: maxFrames)
         stageR.initialize(repeating: 0, count: maxFrames)
-        let abl = AudioBufferList.allocate(maximumBuffers: 2)
-        for i in 0..<2 {
-            abl[i] = AudioBuffer(
-                mNumberChannels: 1, mDataByteSize: UInt32(maxFrames * 4),
-                mData: .allocate(byteCount: maxFrames * 4, alignment: 4))
-        }
-        eqABL = abl.unsafeMutablePointer
+        outL = .allocate(capacity: maxFrames)
+        outL.initialize(repeating: 0, count: maxFrames)
+        outR = .allocate(capacity: maxFrames)
+        outR.initialize(repeating: 0, count: maxFrames)
     }
 
     deinit {
         stageL.deallocate()
         stageR.deallocate()
-        let p = UnsafeMutableAudioBufferListPointer(eqABL)
-        for i in 0..<Int(p.count) { p[i].mData?.deallocate() }
-        free(eqABL)
+        outL.deallocate()
+        outR.deallocate()
     }
-}
-
-/// EQ input callback: feed the staged tap audio (with preamp) into the EQ.
-private func eqInputCB(
-    _ ref: UnsafeMutableRawPointer,
-    _: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-    _: UnsafePointer<AudioTimeStamp>,
-    _: UInt32, _ frames: UInt32,
-    _ ioData: UnsafeMutablePointer<AudioBufferList>?
-) -> OSStatus {
-    guard let ioData else { return noErr }
-    let c = Unmanaged<IOCtx>.fromOpaque(ref).takeUnretainedValue()
-    let abl = UnsafeMutableAudioBufferListPointer(ioData)
-    let n = min(Int(frames), c.stagedFrames)
-    let preamp = c.preampPtr.pointee
-    for (i, src) in [c.stageL, c.stageR].enumerated() where i < abl.count {
-        guard let p = abl[i].mData?.assumingMemoryBound(to: Float.self) else { continue }
-        for j in 0..<n { p[j] = src[j] * preamp }
-        if n < Int(frames) {
-            p.advanced(by: n).initialize(repeating: 0, count: Int(frames) - n)
-        }
-    }
-    return noErr
 }
 
 // MARK: - AudioEngine (Core Audio process-tap architecture)
@@ -127,7 +98,7 @@ final class AudioEngine {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
-    private var eqUnit: AudioUnit?
+    private var biquad: BiquadEQ?
     // macOS 26 requires a non-nil queue; nil silently registers no IOProc.
     private let ioQueue = DispatchQueue(label: "com.paraeq.io", qos: .userInteractive)
 
@@ -186,12 +157,14 @@ final class AudioEngine {
             preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
 
             let tapFormat = try createTap()
-            try setupEQ(sampleRate: tapFormat.mSampleRate)
+            FrequencyResponse.sampleRate = tapFormat.mSampleRate
+            guard let eq = BiquadEQ(bands: bands, sampleRate: tapFormat.mSampleRate) else {
+                throw EngineError.noAudioUnit
+            }
+            biquad = eq
             try createAggregate(outputUID: output.uid)
             try startIO()
             activeOutputUID = output.uid
-
-            applyAllBands()
 
             isRunning = true
             errorMessage = nil
@@ -300,21 +273,22 @@ final class AudioEngine {
     }
 
     private func startIO() throws {
-        let ctx = IOCtx(eqUnit: eqUnit!, maxFrames: 4096,
+        let ctx = IOCtx(eq: biquad!, maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
                         peakLPtr: peakLPtr!, peakRPtr: peakRPtr!)
         let um = Unmanaged.passRetained(ctx)
         ioCtx = um
-        try setEQRenderCallback()
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) {
-            inNow, inInputData, _, outOutputData, _ in
+            _, inInputData, _, outOutputData, _ in
             let c = um.takeUnretainedValue()
             c.callbackCount &+= 1
 
-            // 1. Stage tap input as planar L/R (handles interleaved or planar).
+            // 1. Stage tap input as planar L/R with preamp applied
+            //    (handles interleaved or planar input layouts).
             var frames = 0
             var channel = 0
+            let preamp = c.preampPtr.pointee
             let inABL = UnsafeMutableAudioBufferListPointer(
                 UnsafeMutablePointer(mutating: inInputData))
             for buf in inABL {
@@ -323,7 +297,7 @@ final class AudioEngine {
                 frames = min(Int(buf.mDataByteSize) / (n * 4), c.maxFrames)
                 for ch in 0..<n where channel < 2 {
                     let dst = channel == 0 ? c.stageL : c.stageR
-                    for f in 0..<frames { dst[f] = data[f * n + ch] }
+                    for f in 0..<frames { dst[f] = data[f * n + ch] * preamp }
                     channel += 1
                 }
             }
@@ -331,18 +305,13 @@ final class AudioEngine {
             if channel == 1 {
                 for f in 0..<frames { c.stageR[f] = c.stageL[f] }
             }
-            c.stagedFrames = frames
             guard frames > 0 else { return }
 
-            // 2. Render the EQ (pulls staged audio via eqInputCB).
-            let eqBufs = UnsafeMutableAudioBufferListPointer(c.eqABL)
-            for i in 0..<2 { eqBufs[i].mDataByteSize = UInt32(frames * 4) }
-            var flags = AudioUnitRenderActionFlags(rawValue: 0)
-            let status = AudioUnitRender(c.eqUnit, &flags, inNow, 0, UInt32(frames), c.eqABL)
-            let srcL = status == noErr
-                ? eqBufs[0].mData!.assumingMemoryBound(to: Float.self) : c.stageL
-            let srcR = status == noErr
-                ? eqBufs[1].mData!.assumingMemoryBound(to: Float.self) : c.stageR
+            // 2. Run the biquad chain.
+            c.eq.process(inL: c.stageL, inR: c.stageR,
+                         outL: c.outL, outR: c.outR, frames: frames)
+            let srcL = c.outL
+            let srcR = c.outR
 
             // 3. Volume + clip + peaks → device output buffers.
             let vol = c.volumePtr.pointee
@@ -375,54 +344,6 @@ final class AudioEngine {
             c.peakRPtr.pointee = peakR
         })
         try check(AudioDeviceStart(aggregateID, procID))
-    }
-
-    // MARK: - N-Band EQ (standalone AudioUnit, unchanged parameter mapping)
-
-    private func setupEQ(sampleRate: Double) throws {
-        var desc = AudioComponentDescription(
-            componentType: kAudioUnitType_Effect,
-            componentSubType: kAudioUnitSubType_NBandEQ,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0, componentFlagsMask: 0)
-        guard let comp = AudioComponentFindNext(nil, &desc) else {
-            throw EngineError.noAudioUnit
-        }
-        var au: AudioUnit?
-        try check(AudioComponentInstanceNew(comp, &au))
-        guard let au else { throw EngineError.noAudioUnit }
-        eqUnit = au
-
-        var numBands = UInt32(bands.count)
-        try check(AudioUnitSetProperty(au, 2200, // kAUNBandEQProperty_NumberOfBands
-            kAudioUnitScope_Global, 0, &numBands, 4))
-
-        var fmt = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
-                | kAudioFormatFlagIsNonInterleaved,
-            mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
-            mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
-        try check(AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Input, 0, &fmt,
-            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
-        try check(AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Output, 0, &fmt,
-            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
-
-        var maxFrames: UInt32 = 4096
-        try check(AudioUnitSetProperty(au, kAudioUnitProperty_MaximumFramesPerSlice,
-            kAudioUnitScope_Global, 0, &maxFrames, 4))
-    }
-
-    private func setEQRenderCallback() throws {
-        var cb = AURenderCallbackStruct(inputProc: eqInputCB,
-                                        inputProcRefCon: ioCtx!.toOpaque())
-        try check(AudioUnitSetProperty(eqUnit!, kAudioUnitProperty_SetRenderCallback,
-            kAudioUnitScope_Input, 0, &cb,
-            UInt32(MemoryLayout<AURenderCallbackStruct>.size)))
-        try check(AudioUnitInitialize(eqUnit!))
     }
 
     // MARK: - Device-change handling
@@ -478,22 +399,12 @@ final class AudioEngine {
     // MARK: - Band updates
 
     func applyBand(at index: Int) {
-        guard let eq = eqUnit, isRunning else { return }
-        let b = bands[index]
-        let i = AudioUnitParameterID(index)
-        AudioUnitSetParameter(eq, 2000 + i, kAudioUnitScope_Global, 0,
-            AudioUnitParameterValue(b.filterType.avType.rawValue), 0)
-        AudioUnitSetParameter(eq, 3000 + i, kAudioUnitScope_Global, 0, b.frequency, 0)
-        AudioUnitSetParameter(eq, 4000 + i, kAudioUnitScope_Global, 0,
-            b.enabled ? b.gain : 0, 0)
-        AudioUnitSetParameter(eq, 5000 + i, kAudioUnitScope_Global, 0, b.bandwidth, 0)
-        AudioUnitSetParameter(eq, 1000 + i, kAudioUnitScope_Global, 0,
-            b.enabled ? 0 : 1, 0)
+        biquad?.update(bands: bands)
         if autoPreamp { computeAutoPreamp() }
     }
 
     func applyAllBands() {
-        for i in bands.indices { applyBand(at: i) }
+        biquad?.update(bands: bands)
         if autoPreamp { computeAutoPreamp() }
     }
 
@@ -565,7 +476,6 @@ final class AudioEngine {
             self.peakL = max(rawL, self.peakL * 0.85)
             self.peakR = max(rawR, self.peakR * 0.85)
             self.meterTicks += 1
-            if self.meterTicks == 1 { EngineLog.log("meter timer alive") }
             if self.meterTicks % 300 == 0, let ctx = self.ioCtx?.takeUnretainedValue() {
                 EngineLog.log(String(format: "status: callbacks=%llu peakL=%.3f peakR=%.3f",
                                      ctx.callbackCount, self.peakL, self.peakR))
@@ -589,11 +499,8 @@ final class AudioEngine {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
-        if let u = eqUnit {
-            AudioUnitUninitialize(u); AudioComponentInstanceDispose(u)
-            eqUnit = nil
-        }
         ioCtx?.release(); ioCtx = nil
+        biquad = nil
         if let p = volumePtr { p.deallocate(); volumePtr = nil }
         if let p = preampLinearPtr { p.deallocate(); preampLinearPtr = nil }
         if let p = peakLPtr { p.deallocate(); peakLPtr = nil }
@@ -612,7 +519,7 @@ final class AudioEngine {
 
         var errorDescription: String? {
             switch self {
-            case .noAudioUnit: "Could not access audio unit"
+            case .noAudioUnit: "Could not create EQ processor"
             case .noOutputDevice: "No output device available"
             case .tapDenied(let s):
                 "Could not tap system audio (error \(s)). Check System Settings → "
