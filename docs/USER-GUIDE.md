@@ -77,7 +77,7 @@ Top to bottom:
   Pass** (Q-adjustable), **Band Pass**, **Notch**, plus fixed-slope crossover
   types — **BW 6/24 dB-oct** (Butterworth) and **LR 12/24 dB-oct**
   (Linkwitz-Riley) low/high-pass. Gain/Q sliders hide for types they don't
-  affect.
+  affect. Every type and parameter is explained in [Reference: terms and filter types](#reference-terms-and-filter-types).
 
 ## Channel modes
 
@@ -127,6 +127,111 @@ A lookahead limiter (not a clipper) protects the output: transients are caught
 before they clip, and steady content is transparent below the ceiling. With
 **Auto preamp** on you will rarely engage it; it exists as a safety net for
 manual preamp settings and IR filters.
+
+## Reference: terms and filter types
+
+### The three band parameters
+
+- **Freq (frequency, Hz)** — where on the spectrum the filter acts. Human
+  hearing spans ~20 Hz–20 kHz. Rough landmarks: sub-bass 20–60 Hz, bass
+  60–250 Hz, low mids 250–500 Hz ("mud" lives here), mids 500 Hz–2 kHz
+  (vocals, instruments), presence 2–6 kHz (clarity, harshness), treble/air
+  6–20 kHz (sparkle, sibilance). The sliders are logarithmic because hearing
+  is: each octave (doubling of frequency) feels like an equal step.
+- **Gain (dB)** — how much the filter boosts (+) or cuts (−) at its center.
+  Decibels are logarithmic: +6 dB ≈ double the amplitude, +10 dB ≈ twice as
+  *loud* perceptually. ±3 dB is a clearly audible change; ±12 dB is drastic.
+  Cuts usually sound more natural than boosts.
+- **Q (quality factor)** — how *narrow* the filter is. Low Q (0.5–0.7) = broad,
+  gentle, musical shaping across several octaves. Q ≈ 1.4 covers about one
+  octave. High Q (5–30) = surgical: hitting a single resonance or hum
+  frequency without touching neighbors. (Q relates inversely to bandwidth-in-
+  octaves; Equalizer APO's "BW Oct" notation is the same idea and is converted
+  on import.) For Low/High Pass, Q instead controls the *knee*: 0.707 is
+  maximally flat (Butterworth); higher values add a resonant bump right at the
+  cutoff before the roll-off.
+
+### Filter types
+
+**Tone-shaping types** (use Gain):
+
+- **Peak** (parametric bell) — boosts or cuts a bell-shaped region around the
+  center frequency; width set by Q. The workhorse: 90 % of EQ moves are peaks.
+  Example: −4 dB at 3 kHz, Q 2 to tame a harsh presence peak.
+- **Low Shelf** — raises or lowers *everything below* the corner frequency by
+  the gain amount, flat above it. Natural-sounding bass adjustment ("more/less
+  bass overall") without the narrowness of a peak. Q shapes how abrupt the
+  transition is.
+- **High Shelf** — the mirror image: shifts everything *above* the corner.
+  "More air" (+2 dB at 8 kHz) or "less sizzle" (−3 dB at 10 kHz).
+
+**Removal types** (Gain doesn't apply — they only take away):
+
+- **Low Pass** — lets lows through, progressively removes everything *above*
+  the cutoff at 12 dB per octave. Use: taming extreme treble, lo-fi effects,
+  subwoofer feeds. Q sets the knee (see above).
+- **High Pass** — the mirror: removes everything *below* the cutoff. The
+  classic "rumble filter": 20–30 Hz high-pass removes inaudible sub-rumble
+  that wastes amplifier headroom.
+- **Band Pass** — keeps only a band around the center, rolls off both sides.
+  Telephone/radio effects, isolating a range.
+- **Notch** — the opposite of band pass: a deep, narrow cut at exactly the
+  center frequency. Purpose-built for killing a single tone: 50/60 Hz mains
+  hum, a feedback whistle, one ringing room resonance. Pair with high Q.
+
+**Crossover types** (fixed shape — Gain and Q don't apply):
+
+These are Low/High Pass filters with standardized, steeper roll-offs, named by
+slope. "dB/oct" is how fast the filter attenuates past the cutoff: 6 dB/oct is
+a gentle analog-style slope; 24 dB/oct is steep (two octaves past cutoff ≈
+−48 dB, effectively gone). Steeper = more surgical separation, at the cost of
+more phase rotation near the cutoff.
+
+- **BW (Butterworth)** — "maximally flat": the passband stays perfectly level
+  right up to the cutoff, where the response is −3 dB. Best when you just want
+  content above/below a point gone (rumble removal, harshness ceiling).
+  Offered at 6 and 24 dB/oct.
+- **LR (Linkwitz-Riley)** — the speaker-crossover standard, −6 dB at the
+  cutoff. Its defining property: a matching LR low-pass and high-pass at the
+  same frequency sum back to perfectly flat, which is why it's used to split
+  audio between drivers (woofer/tweeter) or for bass-management setups.
+  Offered at 12 and 24 dB/oct.
+
+If you're not building crossovers or feeding multi-amp speakers, the plain
+Q-adjustable Low/High Pass types are usually all you need.
+
+### Other terms in the app
+
+- **Preamp** — a plain gain stage *before* the EQ. Boosting a band can push
+  peaks past digital full scale (0 dBFS), which would clip; lowering the
+  preamp by the size of your biggest boost prevents that. **Auto** does this
+  calculation continuously from the actual response curve.
+- **Limiter** — the safety net after everything else. It looks 5 ms ahead,
+  and when a peak would exceed the ceiling it smoothly turns the level down
+  just for that moment (and releases over ~60 ms) instead of flattening the
+  waveform the way a clipper would. Below the ceiling it is bit-transparent.
+- **Balance** — relative L/R level, applied after the EQ.
+- **Crossfeed** — on headphones, each ear hears only one channel, which feels
+  "inside the head." Crossfeed mimics speakers in a room by bleeding a
+  low-passed (head-shadowed), quieter copy of each channel into the opposite
+  ear. Chu Moy and Jan Meier are two classic analog circuit flavors (slightly
+  different corner frequencies).
+- **Mid/Side** — any stereo signal can be re-expressed as Mid (L+R: the mono
+  center — vocals, bass, kick) and Side (L−R: the stereo edges — ambience,
+  width). EQing them separately lets you e.g. tighten bass only in the center
+  or add air only to the sides.
+- **GraphicEQ** — instead of a handful of parametric bands, a curve defined by
+  many frequency/gain points (AutoEQ publishes profiles this way). ParaEQ
+  renders the curve as a single precise FIR filter.
+- **FIR / IR / Convolution** — an *impulse response* (IR) is a complete
+  fingerprint of a system's frequency and phase behavior; *convolution*
+  applies that fingerprint to audio. Room-correction packages and headphone
+  target simulations ship as IR files; **Load IR…** applies them. *Minimum
+  phase* (used for GraphicEQ) means the filter is arranged to respond as early
+  as possible, keeping latency near zero.
+- **Peak meter / dBFS** — the bars show the post-limiter peak level per
+  channel. Digital audio clips at full scale (0 dBFS); the limiter's ceiling
+  sits just below it.
 
 ## Troubleshooting
 
