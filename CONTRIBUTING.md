@@ -21,6 +21,25 @@ local identity once and `build.sh` picks it up automatically:
    + `security import` + `security add-trusted-cert -p codeSign`).
 2. Rebuild — the grant now survives rebuilds.
 
+## Releases (notarized distribution)
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds,
+signs (Developer ID + hardened runtime), notarizes, staples, and attaches
+`ParaEQ.zip` to the GitHub release. It stays dormant (exits with a notice)
+until these repository secrets are configured:
+
+| Secret | Value |
+|---|---|
+| `MACOS_CERTIFICATE` | base64 of the "Developer ID Application" `.p12` (`base64 -i cert.p12 \| pbcopy`) |
+| `MACOS_CERTIFICATE_PASSWORD` | the `.p12` password |
+| `MACOS_SIGNING_IDENTITY` | e.g. `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_API_KEY` | base64 of an App Store Connect API `.p8` key |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER_ID` | the App Store Connect issuer ID |
+
+Local releases: one-time `xcrun notarytool store-credentials paraeq-notary …`,
+then `scripts/release.sh "Developer ID Application: Your Name (TEAMID)"`.
+
 ## Ground rules
 
 - Read `docs/ARCHITECTURE.md` first — especially the "Hard-won platform

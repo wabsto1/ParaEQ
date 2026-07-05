@@ -1,0 +1,85 @@
+# Tag-triggered release: build → sign (Developer ID) → notarize → staple →
+# attach ParaEQ.zip to the GitHub release.
+#
+# Dormant until these repository secrets exist (Settings → Secrets → Actions):
+#   MACOS_CERTIFICATE            base64 of the Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD   .p12 password
+#   MACOS_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_API_KEY                base64 of the App Store Connect API .p8 key
+#   APPLE_API_KEY_ID             the key's ID
+#   APPLE_API_ISSUER_ID          the issuer ID
+# Without them the workflow exits early with a notice instead of failing.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        id: creds
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          APIKEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          if [[ -z "$CERT" || -z "$APIKEY" ]]; then
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Signing/notarization secrets not configured — skipping notarized release build."
+          else
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        run: swift test
+
+      - name: Import signing certificate
+        if: steps.creds.outputs.have == 'true'
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PW: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          KEYCHAIN_PW="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          echo "$CERT" | base64 --decode > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$CERT_PW" \
+            -T /usr/bin/codesign
+          rm cert.p12
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+
+      - name: Build, sign, notarize, staple
+        if: steps.creds.outputs.have == 'true'
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo "$APPLE_API_KEY" | base64 --decode > "$NOTARY_KEY_PATH"
+          export NOTARY_KEY_PATH
+          bash scripts/release.sh
+          rm -f "$NOTARY_KEY_PATH"
+
+      - name: Upload release asset
+        if: steps.creds.outputs.have == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" .build/ParaEQ.zip --clobber \
+            || gh release create "$TAG" .build/ParaEQ.zip \
+                 --title "ParaEQ $TAG" --generate-notes
