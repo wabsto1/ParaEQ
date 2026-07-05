@@ -13,6 +13,11 @@ let package = Package(
             name: "TapProto",
             path: "Prototypes/TapProto",
             exclude: ["Info.plist"]
+        ),
+        .testTarget(
+            name: "ParaEQTests",
+            dependencies: ["ParaEQ"],
+            path: "Tests/ParaEQTests"
         )
     ]
 )
