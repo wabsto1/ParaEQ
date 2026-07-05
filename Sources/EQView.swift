@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct EQView: View {
     @Bindable var engine: AudioEngine
     @State private var presetManager = PresetManager()
+    @State private var hintState = HintState()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,9 +35,12 @@ struct EQView: View {
             Divider()
             bandList
             Divider()
+            hintBar
+            Divider()
             footerSection
         }
-        .frame(width: 440, height: 764)
+        .environment(hintState)
+        .frame(width: 440, height: 790)
         .onAppear {
             engine.presetLookup = { [weak presetManager] id in
                 presetManager?.allPresets.first { $0.id == id }
@@ -66,7 +70,7 @@ struct EQView: View {
                 }
                 .tint(engine.bypassed ? .orange : nil)
                 .buttonStyle(.bordered)
-                .help("Toggle EQ bypass for A/B comparison")
+                .helpHint("Toggle EQ bypass for A/B comparison")
             }
             Button(engine.isRunning ? "Stop" : "Start") {
                 if engine.isRunning { engine.stop(rememberOff: true) } else { engine.start() }
@@ -94,7 +98,7 @@ struct EQView: View {
                 .onChange(of: engine.selectedOutput) { _, _ in
                     engine.outputSelectionChanged()
                 }
-                .help("Playback device. System Default follows macOS routing automatically")
+                .helpHint("Playback device. System Default follows macOS routing automatically")
             }
             HStack {
                 Text("Vol").frame(width: 50, alignment: .leading)
@@ -127,21 +131,21 @@ struct EQView: View {
                         engine.clearImpulseResponse()
                     } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless)
-                        .help("Remove the loaded impulse response")
+                        .helpHint("Remove the loaded impulse response")
                 } else if let nodes = engine.graphicEQNodes {
                     Text("GraphicEQ (\(nodes.count) pts)").font(.caption)
                     Button {
                         engine.setGraphicEQ(nil)
                     } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless)
-                        .help("Remove the GraphicEQ curve")
+                        .helpHint("Remove the GraphicEQ curve")
                 } else {
                     Text("None").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Load IR…") { openIRPanel() }
                     .font(.caption)
-                    .help("Load an impulse response file for convolution (room/headphone correction)")
+                    .helpHint("Load an impulse response file for convolution (room/headphone correction)")
             }
             HStack {
                 Text("XFeed").frame(width: 50, alignment: .leading)
@@ -155,7 +159,7 @@ struct EQView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .help("Headphone crossfeed: bleeds low-passed opposite-channel audio into each ear, like speakers in a room")
+                .helpHint("Headphone crossfeed: bleeds low-passed opposite-channel audio into each ear, like speakers in a room")
             }
             HStack {
                 Text("Pre").frame(width: 50, alignment: .leading)
@@ -168,7 +172,7 @@ struct EQView: View {
                 ))
                 .toggleStyle(.checkbox)
                 .font(.caption)
-                .help("Auto-preamp lowers gain to exactly offset your largest EQ boost, preventing clipping")
+                .helpHint("Auto-preamp lowers gain to exactly offset your largest EQ boost, preventing clipping")
                 if engine.autoPreamp {
                     Spacer()
                 } else {
@@ -262,7 +266,7 @@ struct EQView: View {
                 Image(systemName: "square.and.arrow.down")
             }
             .buttonStyle(.borderless)
-            .help("Save the current curve as a preset")
+            .helpHint("Save the current curve as a preset")
             .popover(isPresented: $showingSavePopover) {
                 VStack(spacing: 8) {
                     Text("Save Preset").font(.headline)
@@ -293,7 +297,7 @@ struct EQView: View {
                 Image(systemName: "doc.badge.plus")
             }
             .buttonStyle(.borderless)
-            .help("Import Equalizer APO / AutoEQ file")
+            .helpHint("Import Equalizer APO / AutoEQ file")
 
             // Export button (Equalizer APO ParametricEQ.txt)
             Button {
@@ -302,7 +306,7 @@ struct EQView: View {
                 Image(systemName: "square.and.arrow.up")
             }
             .buttonStyle(.borderless)
-            .help("Export as Equalizer APO ParametricEQ.txt")
+            .helpHint("Export as Equalizer APO ParametricEQ.txt")
 
             // AutoEQ online database picker
             Button {
@@ -311,7 +315,7 @@ struct EQView: View {
                 Image(systemName: "headphones")
             }
             .buttonStyle(.borderless)
-            .help("Browse the AutoEQ headphone database")
+            .helpHint("Browse the AutoEQ headphone database")
             .sheet(isPresented: $showingAutoEQPicker) {
                 AutoEQPickerView { name, parsed in
                     let preset = EQPreset(id: UUID().uuidString, name: name,
@@ -329,7 +333,7 @@ struct EQView: View {
                 Image(systemName: isPinnedToCurrentDevice ? "pin.fill" : "pin")
             }
             .buttonStyle(.borderless)
-            .help("Auto-apply this preset when the current output device is active")
+            .helpHint("Auto-apply this preset when the current output device is active")
 
             // Delete button (only for custom presets)
             if let selected = presetManager.customPresets.first(where: { $0.id == selectedPresetID }) {
@@ -342,7 +346,7 @@ struct EQView: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.borderless)
-                .help("Delete this preset")
+                .helpHint("Delete this preset")
             }
         }
         .padding(.horizontal)
@@ -430,7 +434,7 @@ struct EQView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .fixedSize()
-                .help("Channel mode: one EQ for both channels (Stereo), independent Left/Right, or Mid/Side")
+                .helpHint("Channel mode: one EQ for both channels (Stereo), independent Left/Right, or Mid/Side")
                 if engine.channelMode != .linked {
                     Picker("", selection: $engine.editingB) {
                         Text(engine.channelMode.channelNames.0).tag(false)
@@ -439,7 +443,7 @@ struct EQView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
-                    .help("Select which channel's bands to edit")
+                    .helpHint("Select which channel's bands to edit")
                 }
                 Menu("\(engine.activeBands.count) Bands") {
                     ForEach(BandLayout.allCases) { layout in
@@ -451,7 +455,7 @@ struct EQView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Switch band layout (5/10/15/31 ISO bands — resets gains)")
+                .helpHint("Switch band layout (5/10/15/31 ISO bands — resets gains)")
                 Spacer()
                 Button {
                     engine.addBand()
@@ -459,7 +463,7 @@ struct EQView: View {
                     Image(systemName: "plus.circle")
                 }
                 .buttonStyle(.borderless)
-                .help("Add band")
+                .helpHint("Add band")
             }
             .padding(.horizontal)
             .padding(.vertical, 4)
@@ -494,6 +498,19 @@ struct EQView: View {
         )
     }
 
+    // MARK: - Hint bar (hover descriptions; native tooltips are unreliable
+    // in MenuBarExtra panels)
+
+    private var hintBar: some View {
+        Text(hintState.text ?? "Hover any control for a description")
+            .font(.caption2)
+            .foregroundStyle(hintState.text == nil ? .tertiary : .secondary)
+            .lineLimit(2, reservesSpace: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.vertical, 3)
+    }
+
     // MARK: - Footer
 
     private var footerSection: some View {
@@ -504,7 +521,7 @@ struct EQView: View {
                 engine.applyAllBands()
                 selectedPresetID = "flat"
             }
-            .help("Reset all bands to a flat 10-band layout")
+            .helpHint("Reset all bands to a flat 10-band layout")
             Toggle("Start at Login", isOn: Binding(
                 get: { SMAppService.mainApp.status == .enabled },
                 set: { on in
@@ -542,7 +559,7 @@ struct BandRow: View {
                     Toggle("", isOn: $band.enabled)
                         .labelsHidden()
                         .onChange(of: band.enabled) { _, _ in onChange() }
-                        .help("Enable or bypass this band")
+                        .helpHint("Enable or bypass this band")
 
                     Text("\(index + 1)")
                         .font(.caption.bold())
@@ -586,7 +603,7 @@ struct BandRow: View {
             .buttonStyle(.plain)
             .padding(.horizontal)
             .padding(.vertical, 6)
-            .help("Click to \(isExpanded ? "collapse" : "expand") this band's controls; right-click to remove the band")
+            .helpHint("Click to \(isExpanded ? "collapse" : "expand") this band's controls; right-click to remove the band")
 
             // Expanded controls
             if isExpanded {
