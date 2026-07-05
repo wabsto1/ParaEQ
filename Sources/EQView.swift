@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -24,13 +25,27 @@ struct EQView: View {
             Divider()
             presetSection
             Divider()
-            FrequencyResponseView(bands: engine.activeBands)
+            FrequencyResponseView(bands: Binding(
+                get: { engine.activeBands },
+                set: { engine.activeBands = $0 }
+            )) {
+                engine.applyAllBands()
+            }
             Divider()
             bandList
             Divider()
             footerSection
         }
         .frame(width: 440, height: 764)
+        .onAppear {
+            engine.presetLookup = { [weak presetManager] id in
+                presetManager?.allPresets.first { $0.id == id }
+            }
+            registerHotkeys()
+        }
+        .onChange(of: presetManager.customPresets.count) { _, _ in
+            registerHotkeys()
+        }
     }
 
     // MARK: - Header
@@ -42,6 +57,17 @@ struct EQView: View {
             Text("ParaEQ")
                 .font(.headline)
             Spacer()
+            if engine.isRunning {
+                Button {
+                    engine.setBypassed(!engine.bypassed)
+                } label: {
+                    Text(engine.bypassed ? "Bypassed" : "A/B")
+                        .frame(width: 62)
+                }
+                .tint(engine.bypassed ? .orange : nil)
+                .buttonStyle(.bordered)
+                .help("Toggle EQ bypass for A/B comparison")
+            }
             Button(engine.isRunning ? "Stop" : "Start") {
                 if engine.isRunning { engine.stop(rememberOff: true) } else { engine.start() }
             }
@@ -177,7 +203,29 @@ struct EQView: View {
 
     @State private var selectedPresetID: String = "flat"
     @State private var showingSavePopover = false
+    @State private var showingAutoEQPicker = false
     @State private var newPresetName = ""
+
+    private var isPinnedToCurrentDevice: Bool {
+        guard let uid = engine.currentOutputUID else { return false }
+        return engine.deviceProfile(forUID: uid) == selectedPresetID
+    }
+
+    private func togglePin() {
+        guard let uid = engine.currentOutputUID else { return }
+        engine.assignDeviceProfile(
+            presetID: isPinnedToCurrentDevice ? nil : selectedPresetID, forUID: uid)
+    }
+
+    private func exportPreset() {
+        let panel = NSSavePanel()
+        panel.title = "Export Equalizer APO Preset"
+        panel.nameFieldStringValue = "ParaEQ ParametricEQ.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.level = .floating
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? engine.exportEqualizerAPOText().write(to: url, atomically: true, encoding: .utf8)
+    }
 
     private var presetSection: some View {
         HStack {
@@ -238,6 +286,43 @@ struct EQView: View {
                 Image(systemName: "doc.badge.plus")
             }
             .buttonStyle(.borderless)
+            .help("Import Equalizer APO / AutoEQ file")
+
+            // Export button (Equalizer APO ParametricEQ.txt)
+            Button {
+                exportPreset()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .buttonStyle(.borderless)
+            .help("Export as Equalizer APO ParametricEQ.txt")
+
+            // AutoEQ online database picker
+            Button {
+                showingAutoEQPicker = true
+            } label: {
+                Image(systemName: "headphones")
+            }
+            .buttonStyle(.borderless)
+            .help("Browse the AutoEQ headphone database")
+            .sheet(isPresented: $showingAutoEQPicker) {
+                AutoEQPickerView { name, parsed in
+                    let preset = EQPreset(id: UUID().uuidString, name: name,
+                                          bands: parsed.bands, preamp: parsed.preamp)
+                    presetManager.addImported(preset)
+                    selectedPresetID = preset.id
+                    engine.applyPreset(preset)
+                }
+            }
+
+            // Pin: assign the selected preset to the current output device
+            Button {
+                togglePin()
+            } label: {
+                Image(systemName: isPinnedToCurrentDevice ? "pin.fill" : "pin")
+            }
+            .buttonStyle(.borderless)
+            .help("Auto-apply this preset when the current output device is active")
 
             // Delete button (only for custom presets)
             if let selected = presetManager.customPresets.first(where: { $0.id == selectedPresetID }) {
@@ -296,6 +381,18 @@ struct EQView: View {
         presetManager.addImported(preset)
         selectedPresetID = preset.id
         engine.applyPreset(preset)
+    }
+
+    /// ⌘⌃1…9 activate presets in menu order.
+    private func registerHotkeys() {
+        let presets = presetManager.allPresets
+        HotkeyManager.shared.registerPresetHotkeys(count: presets.count)
+        HotkeyManager.shared.onHotkey = { index in
+            let all = presetManager.allPresets
+            guard all.indices.contains(index) else { return }
+            selectedPresetID = all[index].id
+            engine.applyPreset(all[index])
+        }
     }
 
     private func openIRPanel() {
@@ -396,6 +493,15 @@ struct EQView: View {
                 engine.applyAllBands()
                 selectedPresetID = "flat"
             }
+            Toggle("Start at Login", isOn: Binding(
+                get: { SMAppService.mainApp.status == .enabled },
+                set: { on in
+                    if on { try? SMAppService.mainApp.register() }
+                    else { try? SMAppService.mainApp.unregister() }
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
             Spacer()
             Button("Quit") {
                 engine.stop()

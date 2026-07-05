@@ -1,7 +1,10 @@
 import SwiftUI
 
 struct FrequencyResponseView: View {
-    var bands: [EQBand]
+    @Binding var bands: [EQBand]
+    var onChange: () -> Void = {}
+
+    @State private var draggedBand: Int?
 
     private let graphHeight: CGFloat = 130
     private let leftMargin: CGFloat = 28
@@ -15,19 +18,66 @@ struct FrequencyResponseView: View {
     ]
 
     var body: some View {
-        Canvas { context, size in
-            let plotW = size.width - leftMargin
-            let plotH = size.height - bottomMargin
-            let plotRect = CGRect(x: leftMargin, y: 0, width: plotW, height: plotH)
-
-            drawGrid(context: context, plotRect: plotRect, fullSize: size)
-            drawBandCurves(context: context, plotRect: plotRect)
-            drawCombinedCurve(context: context, plotRect: plotRect)
-            drawBandDots(context: context, plotRect: plotRect)
+        GeometryReader { geo in
+            let plotRect = CGRect(x: leftMargin, y: 0,
+                                  width: geo.size.width - leftMargin,
+                                  height: geo.size.height - bottomMargin)
+            Canvas { context, size in
+                drawGrid(context: context, plotRect: plotRect, fullSize: size)
+                drawBandCurves(context: context, plotRect: plotRect)
+                drawCombinedCurve(context: context, plotRect: plotRect)
+                drawBandDots(context: context, plotRect: plotRect)
+            }
+            .gesture(dragGesture(plotRect: plotRect))
         }
         .frame(height: graphHeight)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Drag-to-edit (drag a band dot: x = frequency, y = gain)
+
+    private func dragGesture(plotRect: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if draggedBand == nil {
+                    draggedBand = nearestBand(to: value.startLocation, in: plotRect)
+                }
+                guard let i = draggedBand, bands.indices.contains(i) else { return }
+                let freq = xToFreq(value.location.x, in: plotRect)
+                bands[i].frequency = Float(min(max(freq, 20), 20000))
+                if bands[i].filterType.usesGain {
+                    let db = yToDb(value.location.y, in: plotRect)
+                    bands[i].gain = Float((min(max(db, -24), 24) * 10).rounded() / 10)
+                }
+                onChange()
+            }
+            .onEnded { _ in draggedBand = nil }
+    }
+
+    private func nearestBand(to point: CGPoint, in plotRect: CGRect) -> Int? {
+        var best: (index: Int, dist: CGFloat)?
+        for (i, band) in bands.enumerated() where band.enabled {
+            let x = freqToX(Double(band.frequency), in: plotRect)
+            let y = dbToY(combinedDB(at: Double(band.frequency)), in: plotRect)
+            let d = hypot(point.x - x, point.y - y)
+            if d < 14, d < (best?.dist ?? .infinity) { best = (i, d) }
+        }
+        return best?.index
+    }
+
+    private func combinedDB(at freq: Double) -> Double {
+        bands.reduce(0.0) { $0 + FrequencyResponse.magnitudeDB(for: $1, atFrequency: freq) }
+    }
+
+    private func xToFreq(_ x: CGFloat, in rect: CGRect) -> Double {
+        let t = Double((x - rect.minX) / rect.width)
+        return pow(10, log10(20.0) + t * (log10(20000.0) - log10(20.0)))
+    }
+
+    private func yToDb(_ y: CGFloat, in rect: CGRect) -> Double {
+        let normalized = Double((rect.maxY - y) / rect.height)
+        return dbRange.lowerBound + normalized * (dbRange.upperBound - dbRange.lowerBound)
     }
 
     // MARK: - Grid

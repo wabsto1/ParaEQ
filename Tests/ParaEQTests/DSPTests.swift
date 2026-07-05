@@ -570,3 +570,32 @@ final class ConvolverTests: XCTestCase {
         XCTAssertEqual(out[d + 500], 0, accuracy: 1e-4)
     }
 }
+
+final class ExportRoundTripTests: XCTestCase {
+    /// Export → re-import must reproduce the same bands (Equalizer APO interop).
+    @MainActor
+    func testEqualizerAPOExportImportRoundTrip() {
+        let engine = AudioEngine()
+        var bands = makeDefaultBands(.five)
+        bands[0] = EQBand(frequency: 60, gain: 4.5, q: 0.71, filterType: .lowShelf, enabled: true)
+        bands[2] = EQBand(frequency: 1200, gain: -3.2, q: 2.5, filterType: .parametric, enabled: true)
+        bands[4] = EQBand(frequency: 9000, gain: -2, q: 0.71, filterType: .highShelf, enabled: true)
+        bands[3].enabled = false   // disabled bands are omitted from export
+        engine.bands = bands
+        engine.autoPreamp = false
+        engine.preamp = -4.5
+
+        let text = engine.exportEqualizerAPOText()
+        XCTAssertTrue(text.contains("Preamp: -4.5 dB"))
+
+        let parsed = AutoEQParser.parse(text)
+        XCTAssertEqual(parsed.preamp, -4.5)
+        XCTAssertEqual(parsed.bands.count, 4, "4 enabled of 5")
+        XCTAssertEqual(parsed.bands[0].filterType, .lowShelf)
+        XCTAssertEqual(parsed.bands[0].frequency, 60)
+        XCTAssertEqual(parsed.bands[0].gain, 4.5, accuracy: 0.05)
+        XCTAssertEqual(parsed.bands[2].frequency, 1200)
+        XCTAssertEqual(parsed.bands[2].q, 2.5, accuracy: 0.01)
+        XCTAssertEqual(parsed.bands[3].filterType, .highShelf)
+    }
+}

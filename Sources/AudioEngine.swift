@@ -46,6 +46,7 @@ private final class IOCtx {
     let preampPtr: UnsafeMutablePointer<Float>
     let volumePtr: UnsafeMutablePointer<Float>
     let balancePtr: UnsafeMutablePointer<Float>
+    let bypassPtr: UnsafeMutablePointer<Float>
     let peakLPtr: UnsafeMutablePointer<Float>
     let peakRPtr: UnsafeMutablePointer<Float>
     var callbackCount: UInt64 = 0
@@ -54,7 +55,7 @@ private final class IOCtx {
          convolver: FIRConvolver?, midSide: Bool,
          maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
-         balancePtr: UnsafeMutablePointer<Float>,
+         balancePtr: UnsafeMutablePointer<Float>, bypassPtr: UnsafeMutablePointer<Float>,
          peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>) {
         self.eq = eq
         self.limiter = limiter
@@ -65,6 +66,7 @@ private final class IOCtx {
         self.preampPtr = preampPtr
         self.volumePtr = volumePtr
         self.balancePtr = balancePtr
+        self.bypassPtr = bypassPtr
         self.peakLPtr = peakLPtr
         self.peakRPtr = peakRPtr
         stageL = .allocate(capacity: maxFrames)
@@ -111,6 +113,11 @@ final class AudioEngine {
     var impulseResponse: [[Float]]?
     var impulseResponseName: String?
     var isRunning = false
+    /// A/B comparison: true = tonal stages skipped (volume/limiter stay).
+    var bypassed = false
+    /// Resolves a preset ID to a preset (wired to the PresetManager by the UI).
+    var presetLookup: ((String) -> EQPreset?)?
+    private var lastAutoProfileID: String?
 
     /// The band set currently shown/edited in the UI.
     var activeBands: [EQBand] {
@@ -138,6 +145,7 @@ final class AudioEngine {
 
     private var volumePtr: UnsafeMutablePointer<Float>?
     private var balancePtr: UnsafeMutablePointer<Float>?
+    private var bypassPtr: UnsafeMutablePointer<Float>?
     private var preampLinearPtr: UnsafeMutablePointer<Float>?
     private var peakLPtr: UnsafeMutablePointer<Float>?
     private var peakRPtr: UnsafeMutablePointer<Float>?
@@ -181,10 +189,22 @@ final class AudioEngine {
             EngineLog.log("Starting: output \(output.name) (\(output.uid))"
                 + (selectedOutput == nil ? " [system default]" : " [user-selected]"))
 
+            // Device auto-profile: apply this output's assigned preset once.
+            if let pid = deviceProfile(forUID: output.uid), pid != lastAutoProfileID,
+               let preset = presetLookup?(pid) {
+                lastAutoProfileID = pid
+                bands = preset.bands
+                bandsB = preset.bands
+                if let p = preset.preamp { autoPreamp = false; preamp = p }
+                EngineLog.log("Applied device profile preset '\(preset.name)'")
+            }
+
             volumePtr = .allocate(capacity: 1)
             volumePtr!.initialize(to: volume)
             balancePtr = .allocate(capacity: 1)
             balancePtr!.initialize(to: balance)
+            bypassPtr = .allocate(capacity: 1)
+            bypassPtr!.initialize(to: bypassed ? 1 : 0)
             peakLPtr = .allocate(capacity: 1)
             peakLPtr!.initialize(to: 0)
             peakRPtr = .allocate(capacity: 1)
@@ -332,7 +352,7 @@ final class AudioEngine {
                         midSide: channelMode == .midSide,
                         maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
-                        balancePtr: balancePtr!,
+                        balancePtr: balancePtr!, bypassPtr: bypassPtr!,
                         peakLPtr: peakLPtr!, peakRPtr: peakRPtr!)
         let um = Unmanaged.passRetained(ctx)
         ioCtx = um
@@ -346,7 +366,8 @@ final class AudioEngine {
             //    (handles interleaved or planar input layouts).
             var frames = 0
             var channel = 0
-            let preamp = c.preampPtr.pointee
+            let bypassed = c.bypassPtr.pointee > 0.5
+            let preamp = bypassed ? 1.0 : c.preampPtr.pointee
             let inABL = UnsafeMutableAudioBufferListPointer(
                 UnsafeMutablePointer(mutating: inInputData))
             for buf in inABL {
@@ -365,28 +386,36 @@ final class AudioEngine {
             }
             guard frames > 0 else { return }
 
-            // 2. [M/S encode] → biquad chain → [M/S decode] → crossfeed
+            // 2. [M/S encode] → biquad chain → [M/S decode] → FIR → crossfeed
             //    → balance + volume → lookahead limiter.
-            if c.midSide {
+            //    Bypass (A/B) skips all tonal stages but keeps volume/limiter.
+            if bypassed {
                 for f in 0..<frames {
-                    let m = (c.stageL[f] + c.stageR[f]) * 0.5
-                    let s = (c.stageL[f] - c.stageR[f]) * 0.5
-                    c.stageL[f] = m
-                    c.stageR[f] = s
+                    c.outL[f] = c.stageL[f]
+                    c.outR[f] = c.stageR[f]
                 }
-            }
-            c.eq.process(inL: c.stageL, inR: c.stageR,
-                         outL: c.outL, outR: c.outR, frames: frames)
-            if c.midSide {
-                for f in 0..<frames {
-                    let m = c.outL[f]
-                    let s = c.outR[f]
-                    c.outL[f] = m + s
-                    c.outR[f] = m - s
+            } else {
+                if c.midSide {
+                    for f in 0..<frames {
+                        let m = (c.stageL[f] + c.stageR[f]) * 0.5
+                        let s = (c.stageL[f] - c.stageR[f]) * 0.5
+                        c.stageL[f] = m
+                        c.stageR[f] = s
+                    }
                 }
+                c.eq.process(inL: c.stageL, inR: c.stageR,
+                             outL: c.outL, outR: c.outR, frames: frames)
+                if c.midSide {
+                    for f in 0..<frames {
+                        let m = c.outL[f]
+                        let s = c.outR[f]
+                        c.outL[f] = m + s
+                        c.outR[f] = m - s
+                    }
+                }
+                c.convolver?.process(l: c.outL, r: c.outR, frames: frames)
+                c.crossfeed?.process(l: c.outL, r: c.outR, frames: frames)
             }
-            c.convolver?.process(l: c.outL, r: c.outR, frames: frames)
-            c.crossfeed?.process(l: c.outL, r: c.outR, frames: frames)
             let vol = c.volumePtr.pointee
             let bal = c.balancePtr.pointee
             let gL = vol * (bal > 0 ? 1 - bal : 1)
@@ -521,6 +550,55 @@ final class AudioEngine {
         balance = value
         balancePtr?.pointee = value
         scheduleSave()
+    }
+
+    func setBypassed(_ on: Bool) {
+        bypassed = on
+        bypassPtr?.pointee = on ? 1 : 0
+    }
+
+    // MARK: - Device auto-profiles (preset per output device)
+
+    var currentOutputUID: String? {
+        selectedOutput?.uid ?? AudioDeviceManager.defaultOutputDevice()?.uid
+    }
+
+    func deviceProfile(forUID uid: String) -> String? {
+        (UserDefaults.standard.dictionary(forKey: "paraeq.deviceProfiles")
+            as? [String: String])?[uid]
+    }
+
+    /// Assign (or clear, with nil) a preset to an output device.
+    func assignDeviceProfile(presetID: String?, forUID uid: String) {
+        var map = (UserDefaults.standard.dictionary(forKey: "paraeq.deviceProfiles")
+            as? [String: String]) ?? [:]
+        map[uid] = presetID
+        UserDefaults.standard.set(map, forKey: "paraeq.deviceProfiles")
+        EngineLog.log("Device profile for \(uid): \(presetID ?? "cleared")")
+    }
+
+    /// Export the active band set + preamp as EqualizerAPO ParametricEQ text.
+    func exportEqualizerAPOText() -> String {
+        var lines = [String(format: "Preamp: %.1f dB", preamp)]
+        var n = 1
+        for b in activeBands where b.enabled {
+            let code: String? = switch b.filterType {
+            case .parametric: "PK"
+            case .lowShelf: "LSC"
+            case .highShelf: "HSC"
+            case .lowPass: "LPQ"
+            case .highPass: "HPQ"
+            case .bandPass: "BP"
+            case .bandStop: "NO"
+            default: nil   // crossover cascades have no single-line APO form
+            }
+            guard let code else { continue }
+            lines.append(String(
+                format: "Filter %d: ON %@ Fc %.1f Hz Gain %.1f dB Q %.2f",
+                n, code, b.frequency, b.gain, b.q))
+            n += 1
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     func setGraphicEQ(_ nodes: [GraphicEQNode]?) {
@@ -716,6 +794,7 @@ final class AudioEngine {
         biquad = nil
         if let p = volumePtr { p.deallocate(); volumePtr = nil }
         if let p = balancePtr { p.deallocate(); balancePtr = nil }
+        if let p = bypassPtr { p.deallocate(); bypassPtr = nil }
         if let p = preampLinearPtr { p.deallocate(); preampLinearPtr = nil }
         if let p = peakLPtr { p.deallocate(); peakLPtr = nil }
         if let p = peakRPtr { p.deallocate(); peakRPtr = nil }
