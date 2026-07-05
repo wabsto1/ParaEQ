@@ -20,6 +20,7 @@ Complete architecture and feature overhaul.
 - AutoEQ online database browser
 - Equalizer APO import (Parametric + GraphicEQ formats) **and export** (round-trip tested)
 - Auto-resume on launch, Start-at-Login, device hot-plug handling, diagnostics log
+- Hover help everywhere: instant hint bar + native tooltips (500 ms delay) on every control
 
 ### Infrastructure
 - 37-test DSP/parser suite (`swift test`)

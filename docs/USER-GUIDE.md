@@ -39,6 +39,11 @@ re-asks for the permission after every rebuild.
 
 ## The main window
 
+**Getting oriented:** hover over any control — its description appears
+instantly in the **hint bar** just above the Reset/Quit row (a native tooltip
+also appears at the cursor after half a second). Everything below is also
+explained in [Reference: terms and filter types](#reference-terms-and-filter-types).
+
 Top to bottom:
 
 - **Start/Stop** — engages or disengages processing. **A/B** (visible while
