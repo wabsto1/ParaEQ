@@ -363,3 +363,106 @@ final class LimiterTests: XCTestCase {
                                  "lookahead catches single-sample transient")
     }
 }
+
+final class PerChannelTests: XCTestCase {
+    private let fs: Double = 48000
+
+    private func rms(_ x: ArraySlice<Float>) -> Float {
+        sqrtf(x.reduce(0) { $0 + $1 * $1 } / Float(x.count))
+    }
+
+    func testIndependentChannelBandSets() throws {
+        // Left: +6 dB at 1 kHz. Right: -6 dB at 1 kHz. Same input both sides.
+        var bandsL = makeDefaultBands(.five)
+        var bandsR = makeDefaultBands(.five)
+        bandsL[2] = EQBand(frequency: 1000, gain: 6, q: 1.41,
+                           filterType: .parametric, enabled: true)
+        bandsR[2] = EQBand(frequency: 1000, gain: -6, q: 1.41,
+                           filterType: .parametric, enabled: true)
+        let eq = try XCTUnwrap(BiquadEQ(bandsA: bandsL, bandsB: bandsR, sampleRate: fs))
+
+        let frames = 48000
+        let input = (0..<frames).map { sinf(2 * .pi * 1000 * Float($0) / Float(fs)) * 0.25 }
+        var inp = input
+        var outL = [Float](repeating: 0, count: frames)
+        var outR = [Float](repeating: 0, count: frames)
+        inp.withUnsafeMutableBufferPointer { p in
+            outL.withUnsafeMutableBufferPointer { ol in
+                outR.withUnsafeMutableBufferPointer { or2 in
+                    eq.process(inL: p.baseAddress!, inR: p.baseAddress!,
+                               outL: ol.baseAddress!, outR: or2.baseAddress!,
+                               frames: frames)
+                }
+            }
+        }
+        let gL = 20 * log10f(rms(outL[24000...]) / rms(input[24000...]))
+        let gR = 20 * log10f(rms(outR[24000...]) / rms(input[24000...]))
+        XCTAssertEqual(gL, 6, accuracy: 0.2, "left channel runs its own set")
+        XCTAssertEqual(gR, -6, accuracy: 0.2, "right channel runs its own set")
+    }
+
+    func testMismatchedSetLengthsPadWithUnity() throws {
+        // 5-band left vs 10-band right must both stay transparent when flat.
+        let eq = try XCTUnwrap(BiquadEQ(bandsA: makeDefaultBands(.five),
+                                        bandsB: makeDefaultBands(.ten),
+                                        sampleRate: fs))
+        let frames = 4096
+        var inp = (0..<frames).map { _ in Float.random(in: -0.5...0.5) }
+        var outL = [Float](repeating: 0, count: frames)
+        var outR = [Float](repeating: 0, count: frames)
+        inp.withUnsafeMutableBufferPointer { p in
+            outL.withUnsafeMutableBufferPointer { ol in
+                outR.withUnsafeMutableBufferPointer { or2 in
+                    eq.process(inL: p.baseAddress!, inR: p.baseAddress!,
+                               outL: ol.baseAddress!, outR: or2.baseAddress!,
+                               frames: frames)
+                }
+            }
+        }
+        for i in stride(from: 0, to: frames, by: 89) {
+            XCTAssertEqual(outL[i], inp[i], accuracy: 5e-4)
+            XCTAssertEqual(outR[i], inp[i], accuracy: 5e-4)
+        }
+    }
+}
+
+final class CrossfeedTests: XCTestCase {
+    func testCrossfeedBleedsLowsNotHighs() {
+        let fs: Double = 48000
+        let cf = Crossfeed(mode: .chuMoy, sampleRate: fs)
+        let frames = 48000
+        // Right-only content: lows at 100 Hz
+        var l = [Float](repeating: 0, count: frames)
+        var r = (0..<frames).map { sinf(2 * .pi * 100 * Float($0) / Float(fs)) * 0.5 }
+        l.withUnsafeMutableBufferPointer { lp in
+            r.withUnsafeMutableBufferPointer { rp in
+                cf.process(l: lp.baseAddress!, r: rp.baseAddress!, frames: frames)
+            }
+        }
+        func rms(_ x: ArraySlice<Float>) -> Float {
+            sqrtf(x.reduce(0) { $0 + $1 * $1 } / Float(x.count))
+        }
+        let bleedLowDB = 20 * log10f(rms(l[24000...]) / 0.3535)
+
+        // Right-only content: highs at 8 kHz
+        let cf2 = Crossfeed(mode: .chuMoy, sampleRate: fs)
+        var l2 = [Float](repeating: 0, count: frames)
+        var r2 = (0..<frames).map { sinf(2 * .pi * 8000 * Float($0) / Float(fs)) * 0.5 }
+        l2.withUnsafeMutableBufferPointer { lp in
+            r2.withUnsafeMutableBufferPointer { rp in
+                cf2.process(l: lp.baseAddress!, r: rp.baseAddress!, frames: frames)
+            }
+        }
+        let bleedHighDB = 20 * log10f(rms(l2[24000...]) / 0.3535)
+
+        XCTAssertEqual(bleedLowDB, -9.5, accuracy: 1.5, "lows bleed at crossfeed level")
+        XCTAssertLessThan(bleedHighDB, bleedLowDB - 15,
+                          "highs shadowed by the head (low-pass leg)")
+    }
+
+    func testCrossfeedOffModeUnused() {
+        // .off is never instantiated by the engine; sanity: mode exists
+        XCTAssertEqual(CrossfeedMode.off.name, "Off")
+        XCTAssertEqual(ChannelMode.allCases.count, 3)
+    }
+}

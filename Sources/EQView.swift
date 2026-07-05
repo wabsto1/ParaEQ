@@ -24,13 +24,13 @@ struct EQView: View {
             Divider()
             presetSection
             Divider()
-            FrequencyResponseView(bands: engine.bands)
+            FrequencyResponseView(bands: engine.activeBands)
             Divider()
             bandList
             Divider()
             footerSection
         }
-        .frame(width: 440, height: 680)
+        .frame(width: 440, height: 740)
     }
 
     // MARK: - Header
@@ -78,6 +78,32 @@ struct EQView: View {
                 Text("\(Int(engine.volume * 100))%")
                     .frame(width: 36, alignment: .trailing)
                     .monospacedDigit()
+            }
+            HStack {
+                Text("Bal").frame(width: 50, alignment: .leading)
+                Slider(value: Binding(
+                    get: { engine.balance },
+                    set: { engine.setBalance(Float($0)) }
+                ), in: -1...1)
+                Text(engine.balance == 0 ? "C"
+                     : String(format: "%@%.0f%%", engine.balance < 0 ? "L" : "R",
+                              abs(engine.balance) * 100))
+                    .frame(width: 36, alignment: .trailing)
+                    .monospacedDigit()
+                    .font(.caption)
+            }
+            HStack {
+                Text("XFeed").frame(width: 50, alignment: .leading)
+                Picker("", selection: Binding(
+                    get: { engine.crossfeedMode },
+                    set: { engine.setCrossfeedMode($0) }
+                )) {
+                    ForEach(CrossfeedMode.allCases) { m in
+                        Text(m.name).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
             HStack {
                 Text("Pre").frame(width: 50, alignment: .leading)
@@ -173,7 +199,7 @@ struct EQView: View {
                             let name = newPresetName.trimmingCharacters(in: .whitespaces)
                             guard !name.isEmpty else { return }
                             let preampVal: Float? = engine.autoPreamp ? nil : engine.preamp
-                            presetManager.save(name: name, bands: engine.bands, preamp: preampVal)
+                            presetManager.save(name: name, bands: engine.activeBands, preamp: preampVal)
                             selectedPresetID = presetManager.customPresets.last!.id
                             showingSavePopover = false
                         }
@@ -250,7 +276,27 @@ struct EQView: View {
     private var bandList: some View {
         VStack(spacing: 0) {
             HStack {
-                Menu("\(engine.bands.count) Bands") {
+                Picker("", selection: Binding(
+                    get: { engine.channelMode },
+                    set: { engine.setChannelMode($0) }
+                )) {
+                    ForEach(ChannelMode.allCases) { m in
+                        Text(m.name).tag(m)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                if engine.channelMode != .linked {
+                    Picker("", selection: $engine.editingB) {
+                        Text(engine.channelMode.channelNames.0).tag(false)
+                        Text(engine.channelMode.channelNames.1).tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                Menu("\(engine.activeBands.count) Bands") {
                     ForEach(BandLayout.allCases) { layout in
                         Button(layout.name) {
                             engine.setLayout(layout)
@@ -260,9 +306,6 @@ struct EQView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                Text("right-click a band to remove")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
                 Spacer()
                 Button {
                     engine.addBand()
@@ -277,7 +320,7 @@ struct EQView: View {
             Divider()
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(engine.bands.indices, id: \.self) { i in
+                    ForEach(engine.activeBands.indices, id: \.self) { i in
                         BandRow(
                             index: i,
                             band: bandBinding(i),
@@ -287,9 +330,9 @@ struct EQView: View {
                             Button("Remove Band", role: .destructive) {
                                 engine.removeBand(at: i)
                             }
-                            .disabled(engine.bands.count <= 1)
+                            .disabled(engine.activeBands.count <= 1)
                         }
-                        if i < engine.bands.count - 1 {
+                        if i < engine.activeBands.count - 1 {
                             Divider().padding(.horizontal)
                         }
                     }
@@ -300,8 +343,8 @@ struct EQView: View {
 
     private func bandBinding(_ i: Int) -> Binding<EQBand> {
         Binding(
-            get: { i < engine.bands.count ? engine.bands[i] : EQBand() },
-            set: { if i < engine.bands.count { engine.bands[i] = $0 } }
+            get: { i < engine.activeBands.count ? engine.activeBands[i] : EQBand() },
+            set: { if i < engine.activeBands.count { engine.activeBands[i] = $0 } }
         )
     }
 
@@ -311,6 +354,7 @@ struct EQView: View {
         HStack {
             Button("Reset") {
                 engine.bands = makeDefaultBands()
+                engine.bandsB = makeDefaultBands()
                 engine.applyAllBands()
                 selectedPresetID = "flat"
             }

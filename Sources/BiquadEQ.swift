@@ -177,13 +177,28 @@ final class BiquadEQ {
         bands.reduce(0) { $0 + BiquadCoefficients.cascade(for: $1, sampleRate: sampleRate).count }
     }
 
-    init?(bands: [EQBand], sampleRate: Double) {
-        self.sections = Self.sectionCount(for: bands, sampleRate: sampleRate)
+    /// Sections required for a channel pair (each channel can carry its own
+    /// band set; the shorter chain is padded with unity sections).
+    static func sectionCount(bandsA: [EQBand], bandsB: [EQBand]?, sampleRate: Double) -> Int {
+        max(sectionCount(for: bandsA, sampleRate: sampleRate),
+            sectionCount(for: bandsB ?? bandsA, sampleRate: sampleRate))
+    }
+
+    /// `bandsB == nil` → both channels run bandsA (linked stereo).
+    /// Otherwise channel 0 runs bandsA and channel 1 runs bandsB
+    /// (independent L/R, or M/S when the caller encodes around process()).
+    init?(bandsA: [EQBand], bandsB: [EQBand]? = nil, sampleRate: Double) {
+        self.sections = Self.sectionCount(bandsA: bandsA, bandsB: bandsB, sampleRate: sampleRate)
         self.sampleRate = sampleRate
-        let coeffs = Self.coefficientArray(for: bands, sampleRate: sampleRate, channels: channels)
+        let coeffs = Self.coefficientArray(bandsA: bandsA, bandsB: bandsB,
+                                           sections: sections, sampleRate: sampleRate)
         guard let setup = vDSP_biquadm_CreateSetup(
             coeffs, vDSP_Length(sections), vDSP_Length(channels)) else { return nil }
         self.setup = setup
+    }
+
+    convenience init?(bands: [EQBand], sampleRate: Double) {
+        self.init(bandsA: bands, bandsB: nil, sampleRate: sampleRate)
     }
 
     deinit {
@@ -195,14 +210,21 @@ final class BiquadEQ {
     /// Returns false when the section count no longer matches (band count or
     /// a crossover type changed) — the caller must rebuild the engine.
     @discardableResult
-    func update(bands: [EQBand]) -> Bool {
-        guard Self.sectionCount(for: bands, sampleRate: sampleRate) == sections else {
+    func update(bandsA: [EQBand], bandsB: [EQBand]? = nil) -> Bool {
+        guard Self.sectionCount(bandsA: bandsA, bandsB: bandsB,
+                                sampleRate: sampleRate) == sections else {
             return false
         }
-        let coeffs = Self.coefficientArray(for: bands, sampleRate: sampleRate, channels: channels)
+        let coeffs = Self.coefficientArray(bandsA: bandsA, bandsB: bandsB,
+                                           sections: sections, sampleRate: sampleRate)
         vDSP_biquadm_SetTargetsDouble(setup, coeffs, 0.005, 0.05,
                                       0, vDSP_Length(sections), 0, vDSP_Length(channels))
         return true
+    }
+
+    @discardableResult
+    func update(bands: [EQBand]) -> Bool {
+        update(bandsA: bands, bandsB: nil)
     }
 
     /// Process planar stereo in place or out of place.
@@ -219,17 +241,21 @@ final class BiquadEQ {
         }
     }
 
-    /// 5 doubles per section per channel: [b0 b1 b2 a1 a2], identical for
-    /// both channels of a stereo pair. Cascade stages become consecutive
-    /// sections.
-    private static func coefficientArray(for bands: [EQBand], sampleRate: Double,
-                                         channels: Int) -> [Double] {
+    /// 5 doubles per section per channel: [b0 b1 b2 a1 a2]. Cascade stages
+    /// become consecutive sections; shorter chains are padded with unity.
+    private static func coefficientArray(bandsA: [EQBand], bandsB: [EQBand]?,
+                                         sections: Int, sampleRate: Double) -> [Double] {
+        func flat(_ bands: [EQBand]) -> [BiquadCoefficients] {
+            var list = bands.flatMap { BiquadCoefficients.cascade(for: $0, sampleRate: sampleRate) }
+            while list.count < sections { list.append(.unity) }
+            return list
+        }
+        let chainA = flat(bandsA)
+        let chainB = flat(bandsB ?? bandsA)
         var result: [Double] = []
-        for band in bands {
-            for c in BiquadCoefficients.cascade(for: band, sampleRate: sampleRate) {
-                for _ in 0..<channels {
-                    result.append(contentsOf: [c.b0, c.b1, c.b2, c.a1, c.a2])
-                }
+        for s in 0..<sections {
+            for c in [chainA[s], chainB[s]] {
+                result.append(contentsOf: [c.b0, c.b1, c.b2, c.a1, c.a2])
             }
         }
         return result

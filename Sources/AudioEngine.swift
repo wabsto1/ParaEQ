@@ -35,6 +35,8 @@ enum EngineLog {
 private final class IOCtx {
     let eq: BiquadEQ
     let limiter: Limiter
+    let crossfeed: Crossfeed?
+    let midSide: Bool
     let maxFrames: Int
     let stageL: UnsafeMutablePointer<Float>
     let stageR: UnsafeMutablePointer<Float>
@@ -42,18 +44,24 @@ private final class IOCtx {
     let outR: UnsafeMutablePointer<Float>
     let preampPtr: UnsafeMutablePointer<Float>
     let volumePtr: UnsafeMutablePointer<Float>
+    let balancePtr: UnsafeMutablePointer<Float>
     let peakLPtr: UnsafeMutablePointer<Float>
     let peakRPtr: UnsafeMutablePointer<Float>
     var callbackCount: UInt64 = 0
 
-    init(eq: BiquadEQ, limiter: Limiter, maxFrames: Int,
+    init(eq: BiquadEQ, limiter: Limiter, crossfeed: Crossfeed?, midSide: Bool,
+         maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
+         balancePtr: UnsafeMutablePointer<Float>,
          peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>) {
         self.eq = eq
         self.limiter = limiter
+        self.crossfeed = crossfeed
+        self.midSide = midSide
         self.maxFrames = maxFrames
         self.preampPtr = preampPtr
         self.volumePtr = volumePtr
+        self.balancePtr = balancePtr
         self.peakLPtr = peakLPtr
         self.peakRPtr = peakRPtr
         stageL = .allocate(capacity: maxFrames)
@@ -87,7 +95,23 @@ private final class IOCtx {
 @Observable
 final class AudioEngine {
     var bands: [EQBand] = makeDefaultBands()
+    /// Second band set: Right channel (stereo mode) or Side (mid-side mode).
+    var bandsB: [EQBand] = makeDefaultBands()
+    var channelMode: ChannelMode = .linked
+    /// Which set the UI is editing when channelMode != .linked.
+    var editingB = false
+    var balance: Float = 0          // -1 full left … +1 full right
+    var crossfeedMode: CrossfeedMode = .off
     var isRunning = false
+
+    /// The band set currently shown/edited in the UI.
+    var activeBands: [EQBand] {
+        get { editingB && channelMode != .linked ? bandsB : bands }
+        set {
+            if editingB && channelMode != .linked { bandsB = newValue }
+            else { bands = newValue }
+        }
+    }
     /// nil = follow the system default output device
     var selectedOutput: AudioDevice?
     var volume: Float = 1.0
@@ -105,6 +129,7 @@ final class AudioEngine {
     private let ioQueue = DispatchQueue(label: "com.paraeq.io", qos: .userInteractive)
 
     private var volumePtr: UnsafeMutablePointer<Float>?
+    private var balancePtr: UnsafeMutablePointer<Float>?
     private var preampLinearPtr: UnsafeMutablePointer<Float>?
     private var peakLPtr: UnsafeMutablePointer<Float>?
     private var peakRPtr: UnsafeMutablePointer<Float>?
@@ -150,6 +175,8 @@ final class AudioEngine {
 
             volumePtr = .allocate(capacity: 1)
             volumePtr!.initialize(to: volume)
+            balancePtr = .allocate(capacity: 1)
+            balancePtr!.initialize(to: balance)
             peakLPtr = .allocate(capacity: 1)
             peakLPtr!.initialize(to: 0)
             peakRPtr = .allocate(capacity: 1)
@@ -160,7 +187,10 @@ final class AudioEngine {
 
             let tapFormat = try createTap()
             FrequencyResponse.sampleRate = tapFormat.mSampleRate
-            guard let eq = BiquadEQ(bands: bands, sampleRate: tapFormat.mSampleRate) else {
+            guard let eq = BiquadEQ(
+                bandsA: bands,
+                bandsB: channelMode == .linked ? nil : bandsB,
+                sampleRate: tapFormat.mSampleRate) else {
                 throw EngineError.noAudioUnit
             }
             biquad = eq
@@ -277,8 +307,12 @@ final class AudioEngine {
     private func startIO() throws {
         let ctx = IOCtx(eq: biquad!,
                         limiter: Limiter(sampleRate: biquad!.sampleRate),
+                        crossfeed: crossfeedMode == .off ? nil
+                            : Crossfeed(mode: crossfeedMode, sampleRate: biquad!.sampleRate),
+                        midSide: channelMode == .midSide,
                         maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
+                        balancePtr: balancePtr!,
                         peakLPtr: peakLPtr!, peakRPtr: peakRPtr!)
         let um = Unmanaged.passRetained(ctx)
         ioCtx = um
@@ -311,14 +345,35 @@ final class AudioEngine {
             }
             guard frames > 0 else { return }
 
-            // 2. Biquad chain, then volume, then lookahead limiter.
+            // 2. [M/S encode] → biquad chain → [M/S decode] → crossfeed
+            //    → balance + volume → lookahead limiter.
+            if c.midSide {
+                for f in 0..<frames {
+                    let m = (c.stageL[f] + c.stageR[f]) * 0.5
+                    let s = (c.stageL[f] - c.stageR[f]) * 0.5
+                    c.stageL[f] = m
+                    c.stageR[f] = s
+                }
+            }
             c.eq.process(inL: c.stageL, inR: c.stageR,
                          outL: c.outL, outR: c.outR, frames: frames)
-            let vol = c.volumePtr.pointee
-            if vol != 1.0 {
+            if c.midSide {
                 for f in 0..<frames {
-                    c.outL[f] *= vol
-                    c.outR[f] *= vol
+                    let m = c.outL[f]
+                    let s = c.outR[f]
+                    c.outL[f] = m + s
+                    c.outR[f] = m - s
+                }
+            }
+            c.crossfeed?.process(l: c.outL, r: c.outR, frames: frames)
+            let vol = c.volumePtr.pointee
+            let bal = c.balancePtr.pointee
+            let gL = vol * (bal > 0 ? 1 - bal : 1)
+            let gR = vol * (bal < 0 ? 1 + bal : 1)
+            if gL != 1.0 || gR != 1.0 {
+                for f in 0..<frames {
+                    c.outL[f] *= gL
+                    c.outR[f] *= gR
                 }
             }
             c.limiter.process(l: c.outL, r: c.outR, frames: frames)
@@ -413,12 +468,37 @@ final class AudioEngine {
     }
 
     func applyAllBands() {
-        if let biquad, !biquad.update(bands: bands), isRunning {
+        let setB = channelMode == .linked ? nil : bandsB
+        if let biquad, !biquad.update(bandsA: bands, bandsB: setB), isRunning {
             // Section count changed (crossover type toggled) — rebuild chain.
             restart()
             return
         }
         if autoPreamp { computeAutoPreamp() }
+        scheduleSave()
+    }
+
+    func setChannelMode(_ mode: ChannelMode) {
+        guard mode != channelMode else { return }
+        if channelMode == .linked {
+            bandsB = bands   // start the second set from the current curve
+        }
+        channelMode = mode
+        editingB = false
+        if isRunning { restart() } else { applyAllBands() }
+        scheduleSave()
+    }
+
+    func setCrossfeedMode(_ mode: CrossfeedMode) {
+        guard mode != crossfeedMode else { return }
+        crossfeedMode = mode
+        if isRunning { restart() }
+        scheduleSave()
+    }
+
+    func setBalance(_ value: Float) {
+        balance = value
+        balancePtr?.pointee = value
         scheduleSave()
     }
 
@@ -434,7 +514,9 @@ final class AudioEngine {
     func applyPreset(_ preset: EQPreset) {
         guard !preset.bands.isEmpty else { return }
         let countChanged = preset.bands.count != bands.count
+            || (channelMode != .linked && preset.bands.count != bandsB.count)
         bands = preset.bands
+        bandsB = preset.bands
         if let p = preset.preamp {
             autoPreamp = false
             setPreamp(p)
@@ -444,19 +526,21 @@ final class AudioEngine {
 
     func setLayout(_ layout: BandLayout) {
         let countChanged = layout.frequencies.count != bands.count
+            || layout.frequencies.count != bandsB.count
         bands = makeDefaultBands(layout)
+        bandsB = makeDefaultBands(layout)
         bandStructureChanged(countChanged: countChanged)
     }
 
     func addBand() {
-        bands.append(EQBand(frequency: 1000, gain: 0, q: 1.41,
-                            filterType: .parametric, enabled: true))
+        activeBands.append(EQBand(frequency: 1000, gain: 0, q: 1.41,
+                                  filterType: .parametric, enabled: true))
         bandStructureChanged(countChanged: true)
     }
 
     func removeBand(at index: Int) {
-        guard bands.count > 1, bands.indices.contains(index) else { return }
-        bands.remove(at: index)
+        guard activeBands.count > 1, activeBands.indices.contains(index) else { return }
+        activeBands.remove(at: index)
         bandStructureChanged(countChanged: true)
     }
 
@@ -483,9 +567,13 @@ final class AudioEngine {
         scheduleSave()
     }
 
-    /// Compute preamp reduction so EQ peak boost stays at 0 dB.
+    /// Compute preamp reduction so EQ peak boost stays at 0 dB
+    /// (worst case across both channel band sets).
     func computeAutoPreamp() {
-        let peakDB = FrequencyResponse.peakGainDB(for: bands)
+        var peakDB = FrequencyResponse.peakGainDB(for: bands)
+        if channelMode != .linked {
+            peakDB = max(peakDB, FrequencyResponse.peakGainDB(for: bandsB))
+        }
         let newPreamp = peakDB > 0 ? -peakDB : Float(0)
         preamp = newPreamp
         preampLinearPtr?.pointee = powf(10.0, newPreamp / 20.0)
@@ -497,6 +585,12 @@ final class AudioEngine {
         if let data = try? JSONEncoder().encode(bands) {
             UserDefaults.standard.set(data, forKey: "paraeq.bands")
         }
+        if let data = try? JSONEncoder().encode(bandsB) {
+            UserDefaults.standard.set(data, forKey: "paraeq.bandsB")
+        }
+        UserDefaults.standard.set(channelMode.rawValue, forKey: "paraeq.channelMode")
+        UserDefaults.standard.set(crossfeedMode.rawValue, forKey: "paraeq.crossfeed")
+        UserDefaults.standard.set(balance, forKey: "paraeq.balance")
         UserDefaults.standard.set(volume, forKey: "paraeq.volume")
         UserDefaults.standard.set(autoPreamp, forKey: "paraeq.autoPreamp")
         if !autoPreamp { UserDefaults.standard.set(preamp, forKey: "paraeq.preamp") }
@@ -507,6 +601,14 @@ final class AudioEngine {
         if let data = UserDefaults.standard.data(forKey: "paraeq.bands"),
            let saved = try? JSONDecoder().decode([EQBand].self, from: data),
            !saved.isEmpty { bands = saved }
+        if let data = UserDefaults.standard.data(forKey: "paraeq.bandsB"),
+           let saved = try? JSONDecoder().decode([EQBand].self, from: data),
+           !saved.isEmpty { bandsB = saved } else { bandsB = bands }
+        if let raw = UserDefaults.standard.string(forKey: "paraeq.channelMode"),
+           let mode = ChannelMode(rawValue: raw) { channelMode = mode }
+        if let raw = UserDefaults.standard.string(forKey: "paraeq.crossfeed"),
+           let mode = CrossfeedMode(rawValue: raw) { crossfeedMode = mode }
+        balance = UserDefaults.standard.float(forKey: "paraeq.balance")
         let v = UserDefaults.standard.float(forKey: "paraeq.volume")
         if v > 0 { volume = v }
         if UserDefaults.standard.object(forKey: "paraeq.autoPreamp") != nil {
@@ -557,6 +659,7 @@ final class AudioEngine {
         ioCtx?.release(); ioCtx = nil
         biquad = nil
         if let p = volumePtr { p.deallocate(); volumePtr = nil }
+        if let p = balancePtr { p.deallocate(); balancePtr = nil }
         if let p = preampLinearPtr { p.deallocate(); preampLinearPtr = nil }
         if let p = peakLPtr { p.deallocate(); peakLPtr = nil }
         if let p = peakRPtr { p.deallocate(); peakRPtr = nil }
