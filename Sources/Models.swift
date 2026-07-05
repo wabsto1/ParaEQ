@@ -10,6 +10,15 @@ enum FilterType: String, Codable, CaseIterable, Identifiable {
     case highPass
     case bandPass
     case bandStop
+    // Crossover types (fixed Q, expanded into biquad cascades)
+    case bwLowPass6
+    case bwLowPass24
+    case bwHighPass6
+    case bwHighPass24
+    case lrLowPass12
+    case lrLowPass24
+    case lrHighPass12
+    case lrHighPass24
 
     var id: String { rawValue }
 
@@ -22,9 +31,35 @@ enum FilterType: String, Codable, CaseIterable, Identifiable {
         case .highPass: "High Pass"
         case .bandPass: "Band Pass"
         case .bandStop: "Notch"
+        case .bwLowPass6: "BW LP 6 dB/oct"
+        case .bwLowPass24: "BW LP 24 dB/oct"
+        case .bwHighPass6: "BW HP 6 dB/oct"
+        case .bwHighPass24: "BW HP 24 dB/oct"
+        case .lrLowPass12: "LR LP 12 dB/oct"
+        case .lrLowPass24: "LR LP 24 dB/oct"
+        case .lrHighPass12: "LR HP 12 dB/oct"
+        case .lrHighPass24: "LR HP 24 dB/oct"
         }
     }
 
+    /// Whether the Q slider applies (crossover types have fixed Q).
+    var usesQ: Bool {
+        switch self {
+        case .bwLowPass6, .bwLowPass24, .bwHighPass6, .bwHighPass24,
+             .lrLowPass12, .lrLowPass24, .lrHighPass12, .lrHighPass24:
+            false
+        default:
+            true
+        }
+    }
+
+    /// Whether the gain slider applies.
+    var usesGain: Bool {
+        switch self {
+        case .parametric, .lowShelf, .highShelf: true
+        default: false
+        }
+    }
 }
 
 // MARK: - EQ Band

@@ -399,12 +399,15 @@ final class AudioEngine {
     // MARK: - Band updates
 
     func applyBand(at index: Int) {
-        biquad?.update(bands: bands)
-        if autoPreamp { computeAutoPreamp() }
+        applyAllBands()
     }
 
     func applyAllBands() {
-        biquad?.update(bands: bands)
+        if let biquad, !biquad.update(bands: bands), isRunning {
+            // Section count changed (crossover type toggled) — rebuild chain.
+            restart()
+            return
+        }
         if autoPreamp { computeAutoPreamp() }
     }
 

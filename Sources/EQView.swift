@@ -420,33 +420,37 @@ struct BandRow: View {
                             .font(.caption).monospacedDigit()
                             .frame(width: 56, alignment: .trailing)
                     }
-                    // Gain
-                    HStack {
-                        Text("Gain")
-                            .font(.caption)
-                            .frame(width: 36, alignment: .leading)
-                        Slider(value: $band.gain, in: -24...24, step: 0.1)
-                            .onChange(of: band.gain) { _, _ in onChange() }
-                        Text("\(band.gainLabel) dB")
-                            .font(.caption).monospacedDigit()
-                            .frame(width: 56, alignment: .trailing)
+                    // Gain (hidden for types where gain doesn't apply)
+                    if band.filterType.usesGain {
+                        HStack {
+                            Text("Gain")
+                                .font(.caption)
+                                .frame(width: 36, alignment: .leading)
+                            Slider(value: $band.gain, in: -24...24, step: 0.1)
+                                .onChange(of: band.gain) { _, _ in onChange() }
+                            Text("\(band.gainLabel) dB")
+                                .font(.caption).monospacedDigit()
+                                .frame(width: 56, alignment: .trailing)
+                        }
                     }
-                    // Q (logarithmic)
-                    HStack {
-                        Text("Q")
-                            .font(.caption)
-                            .frame(width: 36, alignment: .leading)
-                        Slider(
-                            value: logBinding(
-                                value: $band.q,
-                                range: 0.1...30
-                            ),
-                            in: log10(0.1)...log10(30)
-                        )
-                        .onChange(of: band.q) { _, _ in onChange() }
-                        Text(band.qLabel)
-                            .font(.caption).monospacedDigit()
-                            .frame(width: 56, alignment: .trailing)
+                    // Q (hidden for fixed-Q crossover types)
+                    if band.filterType.usesQ {
+                        HStack {
+                            Text("Q")
+                                .font(.caption)
+                                .frame(width: 36, alignment: .leading)
+                            Slider(
+                                value: logBinding(
+                                    value: $band.q,
+                                    range: 0.1...30
+                                ),
+                                in: log10(0.1)...log10(30)
+                            )
+                            .onChange(of: band.q) { _, _ in onChange() }
+                            Text(band.qLabel)
+                                .font(.caption).monospacedDigit()
+                                .frame(width: 56, alignment: .trailing)
+                        }
                     }
                 }
                 .padding(.horizontal, 24)

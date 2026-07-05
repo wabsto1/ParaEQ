@@ -13,6 +13,49 @@ struct BiquadCoefficients {
 
     static let unity = BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
 
+    /// Cascade of biquad sections realizing this band. Simple types return a
+    /// single section; Butterworth/Linkwitz-Riley orders return their stage
+    /// cascade (fixed per-stage Q from the pole angles; LR = squared BW).
+    static func cascade(for band: EQBand, sampleRate: Double) -> [BiquadCoefficients] {
+        guard band.enabled else { return [.unity] }
+        let f0 = min(max(Double(band.frequency), 10.0), sampleRate * 0.499)
+
+        func stage(_ type: FilterType, q: Double) -> BiquadCoefficients {
+            var b = band
+            b.filterType = type
+            b.q = Float(q)
+            return compute(for: b, sampleRate: sampleRate)
+        }
+        func firstOrder(lowPass: Bool) -> BiquadCoefficients {
+            let t = tan(.pi * f0 / sampleRate)
+            let a1 = (t - 1.0) / (t + 1.0)
+            return lowPass
+                ? BiquadCoefficients(b0: t / (t + 1.0), b1: t / (t + 1.0), b2: 0, a1: a1, a2: 0)
+                : BiquadCoefficients(b0: 1.0 / (t + 1.0), b1: -1.0 / (t + 1.0), b2: 0, a1: a1, a2: 0)
+        }
+        // 4th-order Butterworth per-stage Q from pole angles 22.5° / 67.5°
+        let bw4Q: [Double] = [0.5412, 1.3066]
+
+        switch band.filterType {
+        case .bwLowPass6:   return [firstOrder(lowPass: true)]
+        case .bwHighPass6:  return [firstOrder(lowPass: false)]
+        case .bwLowPass24:  return bw4Q.map { stage(.lowPass, q: $0) }
+        case .bwHighPass24: return bw4Q.map { stage(.highPass, q: $0) }
+        case .lrLowPass12:  return [stage(.lowPass, q: 0.5)]
+        case .lrHighPass12: return [stage(.highPass, q: 0.5)]
+        case .lrLowPass24:  return [stage(.lowPass, q: 0.7071), stage(.lowPass, q: 0.7071)]
+        case .lrHighPass24: return [stage(.highPass, q: 0.7071), stage(.highPass, q: 0.7071)]
+        default:            return [compute(for: band, sampleRate: sampleRate)]
+        }
+    }
+
+    /// Combined magnitude of a band's full cascade.
+    static func cascadeMagnitudeDB(for band: EQBand, atFrequency freq: Double,
+                                   sampleRate: Double) -> Double {
+        cascade(for: band, sampleRate: sampleRate)
+            .reduce(0) { $0 + $1.magnitudeDB(atFrequency: freq, sampleRate: sampleRate) }
+    }
+
     static func compute(for band: EQBand, sampleRate: Double) -> BiquadCoefficients {
         guard band.enabled else { return .unity }
 
@@ -55,7 +98,9 @@ struct BiquadCoefficients {
             a1 =     2.0 * ((A - 1.0) - (A + 1.0) * cosw0)
             a2 =             (A + 1.0) - (A - 1.0) * cosw0 - twoSqrtAAlpha
 
-        case .lowPass:
+        // Crossover types are realized in cascade(); grouped here only for
+        // switch exhaustiveness (single-section 2nd-order approximation).
+        case .lowPass, .bwLowPass6, .bwLowPass24, .lrLowPass12, .lrLowPass24:
             b0 = (1.0 - cosw0) / 2.0
             b1 =  1.0 - cosw0
             b2 = (1.0 - cosw0) / 2.0
@@ -63,7 +108,7 @@ struct BiquadCoefficients {
             a1 = -2.0 * cosw0
             a2 =  1.0 - alpha
 
-        case .highPass:
+        case .highPass, .bwHighPass6, .bwHighPass24, .lrHighPass12, .lrHighPass24:
             b0 =  (1.0 + cosw0) / 2.0
             b1 = -(1.0 + cosw0)
             b2 =  (1.0 + cosw0) / 2.0
@@ -126,8 +171,14 @@ final class BiquadEQ {
     private let channels = 2
     let sampleRate: Double
 
+    /// Total biquad sections a band set needs (crossover types expand to
+    /// multi-stage cascades).
+    static func sectionCount(for bands: [EQBand], sampleRate: Double) -> Int {
+        bands.reduce(0) { $0 + BiquadCoefficients.cascade(for: $1, sampleRate: sampleRate).count }
+    }
+
     init?(bands: [EQBand], sampleRate: Double) {
-        self.sections = bands.count
+        self.sections = Self.sectionCount(for: bands, sampleRate: sampleRate)
         self.sampleRate = sampleRate
         let coeffs = Self.coefficientArray(for: bands, sampleRate: sampleRate, channels: channels)
         guard let setup = vDSP_biquadm_CreateSetup(
@@ -141,11 +192,17 @@ final class BiquadEQ {
 
     /// Glitch-free live update; safe to call from the main thread while the
     /// render thread is processing (vDSP ramps toward the targets internally).
-    func update(bands: [EQBand]) {
-        guard bands.count == sections else { return }
+    /// Returns false when the section count no longer matches (band count or
+    /// a crossover type changed) — the caller must rebuild the engine.
+    @discardableResult
+    func update(bands: [EQBand]) -> Bool {
+        guard Self.sectionCount(for: bands, sampleRate: sampleRate) == sections else {
+            return false
+        }
         let coeffs = Self.coefficientArray(for: bands, sampleRate: sampleRate, channels: channels)
         vDSP_biquadm_SetTargetsDouble(setup, coeffs, 0.005, 0.05,
                                       0, vDSP_Length(sections), 0, vDSP_Length(channels))
+        return true
     }
 
     /// Process planar stereo in place or out of place.
@@ -163,15 +220,16 @@ final class BiquadEQ {
     }
 
     /// 5 doubles per section per channel: [b0 b1 b2 a1 a2], identical for
-    /// both channels of a stereo pair.
+    /// both channels of a stereo pair. Cascade stages become consecutive
+    /// sections.
     private static func coefficientArray(for bands: [EQBand], sampleRate: Double,
                                          channels: Int) -> [Double] {
         var result: [Double] = []
-        result.reserveCapacity(bands.count * channels * 5)
         for band in bands {
-            let c = BiquadCoefficients.compute(for: band, sampleRate: sampleRate)
-            for _ in 0..<channels {
-                result.append(contentsOf: [c.b0, c.b1, c.b2, c.a1, c.a2])
+            for c in BiquadCoefficients.cascade(for: band, sampleRate: sampleRate) {
+                for _ in 0..<channels {
+                    result.append(contentsOf: [c.b0, c.b1, c.b2, c.a1, c.a2])
+                }
             }
         }
         return result

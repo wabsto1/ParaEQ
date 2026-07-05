@@ -23,15 +23,15 @@ enum FrequencyResponse {
     /// Magnitude in dB of a single band at a given frequency.
     static func magnitudeDB(for band: EQBand, atFrequency freq: Double) -> Double {
         guard band.enabled else { return 0 }
-        return BiquadCoefficients.compute(for: band, sampleRate: sampleRate)
-            .magnitudeDB(atFrequency: freq, sampleRate: sampleRate)
+        return BiquadCoefficients.cascadeMagnitudeDB(
+            for: band, atFrequency: freq, sampleRate: sampleRate)
     }
 
     /// Combined response curve across all bands (dB values at each log-spaced frequency).
     static func responseCurve(for bands: [EQBand], pointCount: Int) -> [Double] {
         let freqs = logFrequencies(count: pointCount)
-        let coeffs = bands.filter(\.enabled).map {
-            BiquadCoefficients.compute(for: $0, sampleRate: sampleRate)
+        let coeffs = bands.filter(\.enabled).flatMap {
+            BiquadCoefficients.cascade(for: $0, sampleRate: sampleRate)
         }
         return freqs.map { freq in
             coeffs.reduce(0.0) { sum, c in

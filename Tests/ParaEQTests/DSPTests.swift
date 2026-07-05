@@ -233,3 +233,80 @@ final class BandLayoutTests: XCTestCase {
         }
     }
 }
+
+final class CrossoverFilterTests: XCTestCase {
+    private let fs: Double = 48000
+
+    private func mag(_ type: FilterType, freq: Float, at f: Double) -> Double {
+        let b = EQBand(frequency: freq, gain: 0, q: 1, filterType: type, enabled: true)
+        return BiquadCoefficients.cascadeMagnitudeDB(for: b, atFrequency: f, sampleRate: fs)
+    }
+
+    func testButterworthCutoffIsMinus3dB() {
+        for type in [FilterType.bwLowPass6, .bwLowPass24, .bwHighPass6, .bwHighPass24] {
+            XCTAssertEqual(mag(type, freq: 1000, at: 1000), -3.01, accuracy: 0.15,
+                           "\(type) at Fc")
+        }
+    }
+
+    func testLinkwitzRileyCutoffIsMinus6dB() {
+        for type in [FilterType.lrLowPass12, .lrLowPass24, .lrHighPass12, .lrHighPass24] {
+            XCTAssertEqual(mag(type, freq: 1000, at: 1000), -6.02, accuracy: 0.15,
+                           "\(type) at Fc")
+        }
+    }
+
+    func testSlopes() {
+        // Two octaves into the stopband, attenuation ≈ slope × 2
+        XCTAssertEqual(mag(.bwLowPass6, freq: 500, at: 2000), -12, accuracy: 1.5)
+        XCTAssertEqual(mag(.bwLowPass24, freq: 500, at: 2000), -48, accuracy: 2.5)
+        XCTAssertEqual(mag(.lrLowPass12, freq: 500, at: 2000), -24, accuracy: 2.0)
+        XCTAssertEqual(mag(.lrLowPass24, freq: 500, at: 2000), -48, accuracy: 2.5)
+        XCTAssertEqual(mag(.bwHighPass24, freq: 2000, at: 500), -48, accuracy: 2.5)
+    }
+
+    func testPassbandsAreFlat() {
+        XCTAssertEqual(mag(.bwLowPass24, freq: 5000, at: 100), 0, accuracy: 0.1)
+        XCTAssertEqual(mag(.lrHighPass24, freq: 100, at: 5000), 0, accuracy: 0.1)
+    }
+
+    func testSectionCountExpandsForCascades() {
+        var bands = makeDefaultBands()          // 10 single-section bands
+        XCTAssertEqual(BiquadEQ.sectionCount(for: bands, sampleRate: fs), 10)
+        bands[0].filterType = .bwHighPass24     // 2 sections
+        bands[9].filterType = .lrLowPass24      // 2 sections
+        XCTAssertEqual(BiquadEQ.sectionCount(for: bands, sampleRate: fs), 12)
+        // update() must refuse a mismatched chain (engine rebuild required)
+        let eq = BiquadEQ(bands: makeDefaultBands(), sampleRate: fs)!
+        XCTAssertFalse(eq.update(bands: bands))
+        XCTAssertTrue(eq.update(bands: makeDefaultBands()))
+    }
+
+    func testLR24CascadeProcessesAudio() throws {
+        var bands = makeDefaultBands(.five)
+        bands[0] = EQBand(frequency: 100, gain: 0, q: 1,
+                          filterType: .lrHighPass24, enabled: true)
+        let eq = try XCTUnwrap(BiquadEQ(bands: bands, sampleRate: fs))
+        // A 30 Hz sine (well below the 100 Hz LR24 high-pass) should be
+        // strongly attenuated end-to-end through the vDSP chain.
+        let frames = 48000
+        var inp = [Float](repeating: 0, count: frames)
+        for i in 0..<frames { inp[i] = sinf(2 * .pi * 30 * Float(i) / Float(fs)) * 0.5 }
+        var outL = [Float](repeating: 0, count: frames)
+        var outR = [Float](repeating: 0, count: frames)
+        inp.withUnsafeBufferPointer { p in
+            outL.withUnsafeMutableBufferPointer { ol in
+                outR.withUnsafeMutableBufferPointer { or2 in
+                    eq.process(inL: p.baseAddress!, inR: p.baseAddress!,
+                               outL: ol.baseAddress!, outR: or2.baseAddress!,
+                               frames: frames)
+                }
+            }
+        }
+        func rms(_ x: ArraySlice<Float>) -> Float {
+            sqrtf(x.reduce(0) { $0 + $1 * $1 } / Float(x.count))
+        }
+        let attenuationDB = 20 * log10f(rms(outL[24000...]) / rms(inp[24000...]))
+        XCTAssertLessThan(attenuationDB, -35, "30 Hz through 100 Hz LR24 HP")
+    }
+}
