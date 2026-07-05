@@ -52,7 +52,7 @@ cp -R .build/ParaEQ.app /Applications/
 open /Applications/ParaEQ.app
 ```
 
-Click **Start** in the menu-bar popover and grant the System Audio Recording permission when prompted (System Settings → Privacy & Security → Screen & System Audio Recording).
+Click **Start** in the menu-bar popover and grant the System Audio Recording permission when prompted (System Settings → Privacy & Security → Screen & System Audio Recording). See the **[User Guide](docs/USER-GUIDE.md)** for a full walkthrough of every feature.
 
 > Rebuild tip: `build.sh` prefers a codesigning identity named "ParaEQ Dev Signing" if present in your keychain, so the TCC permission survives rebuilds. With plain ad-hoc signing, macOS re-prompts after every rebuild.
 
@@ -75,7 +75,7 @@ Filter math is RBJ Audio-EQ-Cookbook biquads run through `vDSP_biquadm` with per
 swift test   # 37 DSP/parser tests: coefficients, slopes, limiter, FIR design, convolver, round-trips
 ```
 
-Deeper technical documentation: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
+**[User Guide](docs/USER-GUIDE.md)** (installation, permissions, every feature) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
