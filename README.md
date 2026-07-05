@@ -6,6 +6,10 @@ A system-wide parametric equalizer for macOS, living in your menu bar. Captures 
 
 Built with SwiftUI and pure CoreAudio/Accelerate — no external dependencies.
 
+<p align="center">
+  <img src="docs/images/screenshot.png" width="420" alt="ParaEQ menu-bar window: output device, volume/balance, FIR and crossfeed controls, preamp, preset row, frequency-response graph, and the 10-band list">
+</p>
+
 ## Features
 
 **EQ engine**
