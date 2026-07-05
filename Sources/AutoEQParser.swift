@@ -4,22 +4,6 @@ struct AutoEQResult {
     var preamp: Float?
     var bands: [EQBand]
     var originalCount: Int
-
-    /// Normalize to exactly `count` bands: pad with zero-gain or truncate.
-    func normalized(to count: Int) -> AutoEQResult {
-        var result = self
-        if bands.count > count {
-            result.bands = Array(bands.prefix(count))
-        } else if bands.count < count {
-            let defaults = makeDefaultBands()
-            var padded = bands
-            while padded.count < count {
-                padded.append(defaults[padded.count])
-            }
-            result.bands = padded
-        }
-        return result
-    }
 }
 
 enum AutoEQParser {

@@ -409,13 +409,43 @@ final class AudioEngine {
     }
 
     func applyPreset(_ preset: EQPreset) {
-        guard preset.bands.count == bands.count else { return }
+        guard !preset.bands.isEmpty else { return }
+        let countChanged = preset.bands.count != bands.count
         bands = preset.bands
         if let p = preset.preamp {
             autoPreamp = false
             setPreamp(p)
         }
-        applyAllBands()
+        bandStructureChanged(countChanged: countChanged)
+    }
+
+    func setLayout(_ layout: BandLayout) {
+        let countChanged = layout.frequencies.count != bands.count
+        bands = makeDefaultBands(layout)
+        bandStructureChanged(countChanged: countChanged)
+    }
+
+    func addBand() {
+        bands.append(EQBand(frequency: 1000, gain: 0, q: 1.41,
+                            filterType: .parametric, enabled: true))
+        bandStructureChanged(countChanged: true)
+    }
+
+    func removeBand(at index: Int) {
+        guard bands.count > 1, bands.indices.contains(index) else { return }
+        bands.remove(at: index)
+        bandStructureChanged(countChanged: true)
+    }
+
+    /// The biquad chain's section count is fixed at start; a band-count
+    /// change while running needs an engine rebuild (~50 ms).
+    private func bandStructureChanged(countChanged: Bool) {
+        if countChanged, isRunning {
+            restart()
+        } else {
+            applyAllBands()
+        }
+        saveState()
     }
 
     func setVolume(_ v: Float) {
@@ -451,7 +481,7 @@ final class AudioEngine {
     func loadState() {
         if let data = UserDefaults.standard.data(forKey: "paraeq.bands"),
            let saved = try? JSONDecoder().decode([EQBand].self, from: data),
-           saved.count == bands.count { bands = saved }
+           !saved.isEmpty { bands = saved }
         let v = UserDefaults.standard.float(forKey: "paraeq.volume")
         if v > 0 { volume = v }
         if UserDefaults.standard.object(forKey: "paraeq.autoPreamp") != nil {

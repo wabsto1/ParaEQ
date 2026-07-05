@@ -233,17 +233,12 @@ struct EQView: View {
             return
         }
 
-        let normalized = parsed.normalized(to: 10)
-        if parsed.originalCount > 10 {
-            importWarning = "Imported \(parsed.originalCount) filters, truncated to 10"
-        }
-
         let name = url.deletingPathExtension().lastPathComponent
         let preset = EQPreset(
             id: UUID().uuidString,
             name: name,
-            bands: normalized.bands,
-            preamp: normalized.preamp
+            bands: parsed.bands,
+            preamp: parsed.preamp
         )
         presetManager.addImported(preset)
         selectedPresetID = preset.id
@@ -253,16 +248,50 @@ struct EQView: View {
     // MARK: - Band list
 
     private var bandList: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ForEach(engine.bands.indices, id: \.self) { i in
-                    BandRow(
-                        index: i,
-                        band: bandBinding(i),
-                        onChange: { engine.applyBand(at: i) }
-                    )
-                    if i < engine.bands.count - 1 {
-                        Divider().padding(.horizontal)
+        VStack(spacing: 0) {
+            HStack {
+                Menu("\(engine.bands.count) Bands") {
+                    ForEach(BandLayout.allCases) { layout in
+                        Button(layout.name) {
+                            engine.setLayout(layout)
+                            selectedPresetID = "flat"
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Text("right-click a band to remove")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button {
+                    engine.addBand()
+                } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Add band")
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 4)
+            Divider()
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(engine.bands.indices, id: \.self) { i in
+                        BandRow(
+                            index: i,
+                            band: bandBinding(i),
+                            onChange: { engine.applyBand(at: i) }
+                        )
+                        .contextMenu {
+                            Button("Remove Band", role: .destructive) {
+                                engine.removeBand(at: i)
+                            }
+                            .disabled(engine.bands.count <= 1)
+                        }
+                        if i < engine.bands.count - 1 {
+                            Divider().padding(.horizontal)
+                        }
                     }
                 }
             }
@@ -271,8 +300,8 @@ struct EQView: View {
 
     private func bandBinding(_ i: Int) -> Binding<EQBand> {
         Binding(
-            get: { engine.bands[i] },
-            set: { engine.bands[i] = $0 }
+            get: { i < engine.bands.count ? engine.bands[i] : EQBand() },
+            set: { if i < engine.bands.count { engine.bands[i] = $0 } }
         )
     }
 

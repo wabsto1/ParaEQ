@@ -194,3 +194,42 @@ final class AutoEQParserTests: XCTestCase {
         XCTAssertEqual(AutoEQParser.parse(text).bands.count, 1)
     }
 }
+
+final class BandLayoutTests: XCTestCase {
+    func testLayoutsProduceCorrectCounts() {
+        for layout in BandLayout.allCases {
+            let bands = makeDefaultBands(layout)
+            XCTAssertEqual(bands.count, layout.rawValue)
+            XCTAssertEqual(bands.first?.filterType, .lowShelf)
+            XCTAssertEqual(bands.last?.filterType, .highShelf)
+            // Frequencies strictly ascending within 20 Hz–20 kHz
+            let freqs = bands.map(\.frequency)
+            XCTAssertEqual(freqs, freqs.sorted())
+            XCTAssertGreaterThanOrEqual(freqs.first!, 20)
+            XCTAssertLessThanOrEqual(freqs.last!, 20000)
+        }
+    }
+
+    func test31BandChainProcesses() throws {
+        let eq = try XCTUnwrap(BiquadEQ(bands: makeDefaultBands(.thirtyOne),
+                                        sampleRate: 48000))
+        let frames = 2048
+        var inp = [Float](repeating: 0, count: frames)
+        for i in 0..<frames { inp[i] = Float.random(in: -0.5...0.5) }
+        var outL = [Float](repeating: 0, count: frames)
+        var outR = [Float](repeating: 0, count: frames)
+        inp.withUnsafeBufferPointer { p in
+            outL.withUnsafeMutableBufferPointer { ol in
+                outR.withUnsafeMutableBufferPointer { or2 in
+                    eq.process(inL: p.baseAddress!, inR: p.baseAddress!,
+                               outL: ol.baseAddress!, outR: or2.baseAddress!,
+                               frames: frames)
+                }
+            }
+        }
+        // Flat 31-band chain stays transparent (accumulated float error only)
+        for i in stride(from: 0, to: frames, by: 61) {
+            XCTAssertEqual(outL[i], inp[i], accuracy: 5e-4)
+        }
+    }
+}

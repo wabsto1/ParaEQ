@@ -125,13 +125,51 @@ struct EQPreset: Codable, Identifiable, Equatable {
     }()
 }
 
-func makeDefaultBands() -> [EQBand] {
-    let freqs: [Float] = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+// MARK: - Band layouts
+
+enum BandLayout: Int, CaseIterable, Identifiable {
+    case five = 5
+    case ten = 10
+    case fifteen = 15
+    case thirtyOne = 31
+
+    var id: Int { rawValue }
+    var name: String { "\(rawValue) Bands" }
+
+    var frequencies: [Float] {
+        switch self {
+        case .five:
+            [60, 250, 1000, 4000, 12000]
+        case .ten:
+            [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        case .fifteen:
+            [25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600,
+             2500, 4000, 6300, 10000, 16000]
+        case .thirtyOne:
+            [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315,
+             400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
+             5000, 6300, 8000, 10000, 12500, 16000, 20000]
+        }
+    }
+
+    /// Q matched to band spacing (≈ bandwidth of one layout step).
+    var q: Float {
+        switch self {
+        case .five: 0.7
+        case .ten: 1.41
+        case .fifteen: 2.15
+        case .thirtyOne: 4.32
+        }
+    }
+}
+
+func makeDefaultBands(_ layout: BandLayout = .ten) -> [EQBand] {
+    let freqs = layout.frequencies
     return freqs.enumerated().map { i, freq in
         EQBand(
             frequency: freq,
             gain: 0,
-            q: 1.41,
+            q: layout.q,
             filterType: i == 0 ? .lowShelf : (i == freqs.count - 1 ? .highShelf : .parametric),
             enabled: true
         )
