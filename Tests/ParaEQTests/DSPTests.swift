@@ -310,3 +310,56 @@ final class CrossoverFilterTests: XCTestCase {
         XCTAssertLessThan(attenuationDB, -35, "30 Hz through 100 Hz LR24 HP")
     }
 }
+
+final class LimiterTests: XCTestCase {
+    private func run(_ limiter: Limiter, input: [Float]) -> [Float] {
+        var l = input
+        var r = input
+        l.withUnsafeMutableBufferPointer { lp in
+            r.withUnsafeMutableBufferPointer { rp in
+                limiter.process(l: lp.baseAddress!, r: rp.baseAddress!,
+                                frames: input.count)
+            }
+        }
+        return l
+    }
+
+    func testOutputNeverExceedsCeiling() {
+        let limiter = Limiter(sampleRate: 48000, ceiling: 0.985)
+        // 2× overshoot sine
+        let input = (0..<48000).map { sinf(2 * .pi * 440 * Float($0) / 48000) * 2.0 }
+        let out = run(limiter, input: input)
+        XCTAssertLessThanOrEqual(out.map { abs($0) }.max()!, 0.9851)
+    }
+
+    func testBelowThresholdIsTransparentAfterDelay() {
+        let limiter = Limiter(sampleRate: 48000, ceiling: 0.985)
+        let input = (0..<4800).map { sinf(2 * .pi * 440 * Float($0) / 48000) * 0.5 }
+        let out = run(limiter, input: input)
+        let delay = 240 // 5 ms at 48 kHz
+        for i in stride(from: 0, to: input.count - delay, by: 37) {
+            XCTAssertEqual(out[i + delay], input[i], accuracy: 1e-5,
+                           "pure delay below threshold")
+        }
+    }
+
+    func testLimitedSineKeepsShape() {
+        // Unlike a clipper, a limiter scales the waveform: crest factor of a
+        // steady limited sine stays ≈ √2 instead of flattening toward 1.
+        let limiter = Limiter(sampleRate: 48000, ceiling: 0.985)
+        let input = (0..<96000).map { sinf(2 * .pi * 440 * Float($0) / 48000) * 3.0 }
+        let out = Array(run(limiter, input: input)[48000...])
+        let peak = out.map { abs($0) }.max()!
+        let rms = sqrtf(out.reduce(0) { $0 + $1 * $1 } / Float(out.count))
+        XCTAssertEqual(peak / rms, sqrtf(2), accuracy: 0.05, "sine crest factor preserved")
+    }
+
+    func testImpulseIsCaught() {
+        let limiter = Limiter(sampleRate: 48000, ceiling: 0.985)
+        var input = [Float](repeating: 0.1, count: 4800)
+        input[2400] = 4.0  // single-sample spike
+        let out = run(limiter, input: input)
+        XCTAssertLessThanOrEqual(out.map { abs($0) }.max()!, 0.9851,
+                                 "lookahead catches single-sample transient")
+    }
+}

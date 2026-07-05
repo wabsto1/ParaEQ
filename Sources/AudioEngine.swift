@@ -34,6 +34,7 @@ enum EngineLog {
 /// result to the device output buffers.
 private final class IOCtx {
     let eq: BiquadEQ
+    let limiter: Limiter
     let maxFrames: Int
     let stageL: UnsafeMutablePointer<Float>
     let stageR: UnsafeMutablePointer<Float>
@@ -45,10 +46,11 @@ private final class IOCtx {
     let peakRPtr: UnsafeMutablePointer<Float>
     var callbackCount: UInt64 = 0
 
-    init(eq: BiquadEQ, maxFrames: Int,
+    init(eq: BiquadEQ, limiter: Limiter, maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
          peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>) {
         self.eq = eq
+        self.limiter = limiter
         self.maxFrames = maxFrames
         self.preampPtr = preampPtr
         self.volumePtr = volumePtr
@@ -273,7 +275,9 @@ final class AudioEngine {
     }
 
     private func startIO() throws {
-        let ctx = IOCtx(eq: biquad!, maxFrames: 4096,
+        let ctx = IOCtx(eq: biquad!,
+                        limiter: Limiter(sampleRate: biquad!.sampleRate),
+                        maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
                         peakLPtr: peakLPtr!, peakRPtr: peakRPtr!)
         let um = Unmanaged.passRetained(ctx)
@@ -307,14 +311,21 @@ final class AudioEngine {
             }
             guard frames > 0 else { return }
 
-            // 2. Run the biquad chain.
+            // 2. Biquad chain, then volume, then lookahead limiter.
             c.eq.process(inL: c.stageL, inR: c.stageR,
                          outL: c.outL, outR: c.outR, frames: frames)
+            let vol = c.volumePtr.pointee
+            if vol != 1.0 {
+                for f in 0..<frames {
+                    c.outL[f] *= vol
+                    c.outR[f] *= vol
+                }
+            }
+            c.limiter.process(l: c.outL, r: c.outR, frames: frames)
             let srcL = c.outL
             let srcR = c.outR
 
-            // 3. Volume + clip + peaks → device output buffers.
-            let vol = c.volumePtr.pointee
+            // 3. Peaks + copy to device output buffers.
             var peakL = c.peakLPtr.pointee
             var peakR = c.peakRPtr.pointee
             let outABL = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -329,8 +340,7 @@ final class AudioEngine {
                     let count = min(outFrames, frames)
                     var peak = left ? peakL : peakR
                     for f in 0..<count {
-                        var x = src[f] * vol
-                        if x > 1.0 { x = 1.0 } else if x < -1.0 { x = -1.0 }
+                        let x = src[f]
                         data[f * n + ch] = x
                         let a = x < 0 ? -x : x
                         if a > peak { peak = a }
@@ -409,6 +419,16 @@ final class AudioEngine {
             return
         }
         if autoPreamp { computeAutoPreamp() }
+        scheduleSave()
+    }
+
+    /// Debounced persistence so a crash never loses more than ~1 s of edits.
+    private var saveWork: DispatchWorkItem?
+    private func scheduleSave() {
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveState() }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     func applyPreset(_ preset: EQPreset) {
@@ -454,11 +474,13 @@ final class AudioEngine {
     func setVolume(_ v: Float) {
         volume = v
         volumePtr?.pointee = v
+        scheduleSave()
     }
 
     func setPreamp(_ dB: Float) {
         preamp = dB
         preampLinearPtr?.pointee = powf(10.0, dB / 20.0)
+        scheduleSave()
     }
 
     /// Compute preamp reduction so EQ peak boost stays at 0 dB.
