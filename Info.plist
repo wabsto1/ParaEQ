@@ -15,10 +15,10 @@
     <key>CFBundleExecutable</key>
     <string>ParaEQ</string>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>14.4</string>
     <key>LSUIElement</key>
     <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>ParaEQ needs audio input access to capture system audio from BlackHole and apply equalizer processing.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>ParaEQ captures system audio in order to apply equalizer processing before playing it to your output device.</string>
 </dict>
 </plist>

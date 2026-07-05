@@ -15,8 +15,13 @@ mkdir -p "$BUNDLE/Contents/Resources"
 cp ".build/release/${APP_NAME}" "$BUNDLE/Contents/MacOS/"
 cp Info.plist "$BUNDLE/Contents/"
 
-# Ad-hoc sign so macOS allows audio input
-codesign --force --deep --sign - "$BUNDLE"
+# Prefer the stable local identity (keeps the system-audio TCC grant across
+# rebuilds — ad-hoc signing changes the binary hash and re-prompts every time)
+if security find-identity -v -p codesigning | grep -q "ParaEQ Dev Signing"; then
+    codesign --force --deep --sign "ParaEQ Dev Signing" "$BUNDLE"
+else
+    codesign --force --deep --sign - "$BUNDLE"
+fi
 
 echo ""
 echo "Built: $BUNDLE"

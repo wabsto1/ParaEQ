@@ -43,7 +43,7 @@ struct EQView: View {
                 .font(.headline)
             Spacer()
             Button(engine.isRunning ? "Stop" : "Start") {
-                if engine.isRunning { engine.stop() } else { engine.start() }
+                if engine.isRunning { engine.stop(rememberOff: true) } else { engine.start() }
             }
             .buttonStyle(.borderedProminent)
             .tint(engine.isRunning ? .red : .green)
@@ -57,24 +57,17 @@ struct EQView: View {
     private var deviceSection: some View {
         VStack(spacing: 6) {
             HStack {
-                Text("Input").frame(width: 50, alignment: .leading)
-                Picker("", selection: $engine.selectedInput) {
-                    Text("None").tag(AudioDevice?.none)
-                    ForEach(AudioDeviceManager.inputDevices()) { d in
-                        Text(d.name).tag(AudioDevice?.some(d))
-                    }
-                }
-                .labelsHidden()
-            }
-            HStack {
                 Text("Output").frame(width: 50, alignment: .leading)
                 Picker("", selection: $engine.selectedOutput) {
-                    Text("None").tag(AudioDevice?.none)
+                    Text("System Default").tag(AudioDevice?.none)
                     ForEach(AudioDeviceManager.outputDevices()) { d in
                         Text(d.name).tag(AudioDevice?.some(d))
                     }
                 }
                 .labelsHidden()
+                .onChange(of: engine.selectedOutput) { _, _ in
+                    engine.outputSelectionChanged()
+                }
             }
             HStack {
                 Text("Vol").frame(width: 50, alignment: .leading)
@@ -118,13 +111,7 @@ struct EQView: View {
     // MARK: - Warning
 
     private var warningMessage: String? {
-        if engine.selectedInput == nil {
-            return "BlackHole not found. Install: brew install blackhole-2ch"
-        }
-        if let err = engine.errorMessage {
-            return err
-        }
-        return nil
+        engine.errorMessage
     }
 
     @State private var importWarning: String?
