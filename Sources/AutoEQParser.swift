@@ -7,6 +7,26 @@ struct AutoEQResult {
 }
 
 enum AutoEQParser {
+
+    /// Parse an EqualizerAPO `GraphicEQ: f1 g1; f2 g2; …` line (AutoEQ
+    /// GraphicEQ profile format). Returns nil if no such line exists.
+    static func parseGraphicEQ(_ text: String) -> [GraphicEQNode]? {
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.lowercased().hasPrefix("graphiceq:") else { continue }
+            let body = trimmed.dropFirst("graphiceq:".count)
+            let nodes: [GraphicEQNode] = body.components(separatedBy: ";").compactMap { pair in
+                let parts = pair.split(separator: " ").map(String.init)
+                guard parts.count >= 2,
+                      let f = Float(parts[0]), let g = Float(parts[1]),
+                      f > 0 else { return nil }
+                return GraphicEQNode(frequency: f, gainDB: g)
+            }
+            if !nodes.isEmpty { return nodes }
+        }
+        return nil
+    }
+
     /// Parse EqualizerAPO ParametricEQ.txt format.
     static func parse(_ text: String) -> AutoEQResult {
         var preamp: Float?

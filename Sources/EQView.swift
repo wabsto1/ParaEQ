@@ -30,7 +30,7 @@ struct EQView: View {
             Divider()
             footerSection
         }
-        .frame(width: 440, height: 740)
+        .frame(width: 440, height: 764)
     }
 
     // MARK: - Header
@@ -90,6 +90,27 @@ struct EQView: View {
                               abs(engine.balance) * 100))
                     .frame(width: 36, alignment: .trailing)
                     .monospacedDigit()
+                    .font(.caption)
+            }
+            HStack {
+                Text("FIR").frame(width: 50, alignment: .leading)
+                if let name = engine.impulseResponseName {
+                    Text(name).font(.caption).lineLimit(1)
+                    Button {
+                        engine.clearImpulseResponse()
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless)
+                } else if let nodes = engine.graphicEQNodes {
+                    Text("GraphicEQ (\(nodes.count) pts)").font(.caption)
+                    Button {
+                        engine.setGraphicEQ(nil)
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless)
+                } else {
+                    Text("None").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Load IR…") { openIRPanel() }
                     .font(.caption)
             }
             HStack {
@@ -253,6 +274,12 @@ struct EQView: View {
             return
         }
 
+        // GraphicEQ profile → minimum-phase FIR stage
+        if let nodes = AutoEQParser.parseGraphicEQ(text) {
+            engine.setGraphicEQ(nodes)
+            return
+        }
+
         let parsed = AutoEQParser.parse(text)
         if parsed.bands.isEmpty {
             importWarning = "No filters found in file"
@@ -269,6 +296,17 @@ struct EQView: View {
         presetManager.addImported(preset)
         selectedPresetID = preset.id
         engine.applyPreset(preset)
+    }
+
+    private func openIRPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Load Impulse Response"
+        panel.allowedContentTypes = [.audio, .wav, .aiff]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.level = .floating
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        engine.loadImpulseResponse(url: url)
     }
 
     // MARK: - Band list

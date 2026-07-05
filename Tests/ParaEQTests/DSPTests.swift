@@ -466,3 +466,107 @@ final class CrossfeedTests: XCTestCase {
         XCTAssertEqual(ChannelMode.allCases.count, 3)
     }
 }
+
+final class GraphicEQTests: XCTestCase {
+    /// Frequency response of an FIR via direct DFT at one frequency.
+    private func firResponseDB(_ h: [Float], freq: Double, fs: Double) -> Double {
+        var re = 0.0, im = 0.0
+        let w = 2 * Double.pi * freq / fs
+        for (n, tap) in h.enumerated() {
+            re += Double(tap) * cos(w * Double(n))
+            im -= Double(tap) * sin(w * Double(n))
+        }
+        return 20 * log10(max(sqrt(re * re + im * im), 1e-12))
+    }
+
+    func testMinPhaseFIRMatchesNodeTargets() {
+        let nodes = [
+            GraphicEQNode(frequency: 100, gainDB: 6),
+            GraphicEQNode(frequency: 1000, gainDB: 0),
+            GraphicEQNode(frequency: 10000, gainDB: -6),
+        ]
+        let h = MinPhaseFIR.design(nodes: nodes, sampleRate: 48000)
+        XCTAssertEqual(firResponseDB(h, freq: 100, fs: 48000), 6, accuracy: 0.5)
+        XCTAssertEqual(firResponseDB(h, freq: 1000, fs: 48000), 0, accuracy: 0.5)
+        XCTAssertEqual(firResponseDB(h, freq: 10000, fs: 48000), -6, accuracy: 0.5)
+        // Log-space interpolation midpoint ~ +3 dB at ~316 Hz
+        XCTAssertEqual(firResponseDB(h, freq: 316, fs: 48000), 3, accuracy: 0.7)
+    }
+
+    func testMinPhaseEnergyIsFrontLoaded() {
+        let nodes = [GraphicEQNode(frequency: 100, gainDB: 6),
+                     GraphicEQNode(frequency: 10000, gainDB: -6)]
+        let h = MinPhaseFIR.design(nodes: nodes, sampleRate: 48000)
+        let firstEnergy = h[..<512].reduce(Float(0)) { $0 + $1 * $1 }
+        let total = h.reduce(Float(0)) { $0 + $1 * $1 }
+        XCTAssertGreaterThan(firstEnergy / total, 0.95,
+                             "minimum phase concentrates energy at t=0 (low latency)")
+    }
+
+    func testGraphicEQParser() {
+        let text = "GraphicEQ: 20 -1.2; 100 3.5; 1000 0.0; 20000 -4"
+        let nodes = AutoEQParser.parseGraphicEQ(text)
+        XCTAssertEqual(nodes?.count, 4)
+        XCTAssertEqual(nodes?[1].frequency, 100)
+        XCTAssertEqual(nodes?[1].gainDB, 3.5)
+        XCTAssertNil(AutoEQParser.parseGraphicEQ("Filter 1: ON PK Fc 100 Hz Gain 1 dB Q 1"))
+    }
+}
+
+final class ConvolverTests: XCTestCase {
+    /// Push audio through in awkward chunk sizes to exercise the FIFOs.
+    private func stream(_ conv: FIRConvolver, input: [Float], chunk: Int) -> [Float] {
+        var l = input
+        var r = input
+        var i = 0
+        l.withUnsafeMutableBufferPointer { lp in
+            r.withUnsafeMutableBufferPointer { rp in
+                while i < input.count {
+                    let n = min(chunk, input.count - i)
+                    conv.process(l: lp.baseAddress! + i, r: rp.baseAddress! + i, frames: n)
+                    i += n
+                }
+            }
+        }
+        return l
+    }
+
+    func testDeltaIRIsIdentityWithBlockLatency() throws {
+        var ir = [Float](repeating: 0, count: 2048)
+        ir[0] = 1.0
+        let conv = try XCTUnwrap(FIRConvolver(impulseResponses: [ir]))
+        let input = (0..<4096).map { _ in Float.random(in: -0.5...0.5) }
+        let out = stream(conv, input: input, chunk: 480)  // non-power-of-two chunks
+        let d = conv.latency
+        for i in stride(from: 0, to: input.count - d, by: 53) {
+            XCTAssertEqual(out[i + d], input[i], accuracy: 1e-4)
+        }
+    }
+
+    func testScaledDelayedDelta() throws {
+        var ir = [Float](repeating: 0, count: 1024)
+        ir[100] = 0.5   // 0.5× gain, 100-sample delay
+        let conv = try XCTUnwrap(FIRConvolver(impulseResponses: [ir]))
+        let input = (0..<4096).map { sinf(Float($0) * 0.05) * 0.4 }
+        let out = stream(conv, input: input, chunk: 512)
+        let d = conv.latency + 100
+        for i in stride(from: 0, to: input.count - d, by: 37) {
+            XCTAssertEqual(out[i + d], input[i] * 0.5, accuracy: 1e-4)
+        }
+    }
+
+    func testLongIRSpansPartitions() throws {
+        // IR longer than one partition: two spikes 1000 samples apart
+        var ir = [Float](repeating: 0, count: 1600)
+        ir[0] = 1.0
+        ir[1000] = -0.5
+        let conv = try XCTUnwrap(FIRConvolver(impulseResponses: [ir]))
+        var input = [Float](repeating: 0, count: 4096)
+        input[0] = 1.0   // unit impulse in
+        let out = stream(conv, input: input, chunk: 512)
+        let d = conv.latency
+        XCTAssertEqual(out[d], 1.0, accuracy: 1e-4)
+        XCTAssertEqual(out[d + 1000], -0.5, accuracy: 1e-4)
+        XCTAssertEqual(out[d + 500], 0, accuracy: 1e-4)
+    }
+}

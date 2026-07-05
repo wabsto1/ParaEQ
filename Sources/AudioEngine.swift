@@ -36,6 +36,7 @@ private final class IOCtx {
     let eq: BiquadEQ
     let limiter: Limiter
     let crossfeed: Crossfeed?
+    let convolver: FIRConvolver?
     let midSide: Bool
     let maxFrames: Int
     let stageL: UnsafeMutablePointer<Float>
@@ -49,7 +50,8 @@ private final class IOCtx {
     let peakRPtr: UnsafeMutablePointer<Float>
     var callbackCount: UInt64 = 0
 
-    init(eq: BiquadEQ, limiter: Limiter, crossfeed: Crossfeed?, midSide: Bool,
+    init(eq: BiquadEQ, limiter: Limiter, crossfeed: Crossfeed?,
+         convolver: FIRConvolver?, midSide: Bool,
          maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
          balancePtr: UnsafeMutablePointer<Float>,
@@ -57,6 +59,7 @@ private final class IOCtx {
         self.eq = eq
         self.limiter = limiter
         self.crossfeed = crossfeed
+        self.convolver = convolver
         self.midSide = midSide
         self.maxFrames = maxFrames
         self.preampPtr = preampPtr
@@ -102,6 +105,11 @@ final class AudioEngine {
     var editingB = false
     var balance: Float = 0          // -1 full left … +1 full right
     var crossfeedMode: CrossfeedMode = .off
+    /// GraphicEQ curve (minimum-phase FIR stage); nil = off.
+    var graphicEQNodes: [GraphicEQNode]?
+    /// Loaded impulse response(s) for convolution; nil = off.
+    var impulseResponse: [[Float]]?
+    var impulseResponseName: String?
     var isRunning = false
 
     /// The band set currently shown/edited in the UI.
@@ -305,10 +313,22 @@ final class AudioEngine {
     }
 
     private func startIO() throws {
+        // FIR stage: explicit IR wins; otherwise GraphicEQ curve if set.
+        var convolver: FIRConvolver?
+        if let irs = impulseResponse {
+            convolver = FIRConvolver(impulseResponses: irs)
+        } else if let nodes = graphicEQNodes, !nodes.isEmpty {
+            let fir = MinPhaseFIR.design(nodes: nodes, sampleRate: biquad!.sampleRate)
+            convolver = FIRConvolver(impulseResponses: [fir])
+        }
+        if convolver != nil {
+            EngineLog.log("FIR stage active (\(impulseResponseName ?? "GraphicEQ"))")
+        }
         let ctx = IOCtx(eq: biquad!,
                         limiter: Limiter(sampleRate: biquad!.sampleRate),
                         crossfeed: crossfeedMode == .off ? nil
                             : Crossfeed(mode: crossfeedMode, sampleRate: biquad!.sampleRate),
+                        convolver: convolver,
                         midSide: channelMode == .midSide,
                         maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
@@ -365,6 +385,7 @@ final class AudioEngine {
                     c.outR[f] = m - s
                 }
             }
+            c.convolver?.process(l: c.outL, r: c.outR, frames: frames)
             c.crossfeed?.process(l: c.outL, r: c.outR, frames: frames)
             let vol = c.volumePtr.pointee
             let bal = c.balancePtr.pointee
@@ -502,6 +523,33 @@ final class AudioEngine {
         scheduleSave()
     }
 
+    func setGraphicEQ(_ nodes: [GraphicEQNode]?) {
+        graphicEQNodes = nodes
+        if isRunning { restart() }
+        scheduleSave()
+    }
+
+    /// Load an impulse response audio file (resampled to the engine rate).
+    func loadImpulseResponse(url: URL) {
+        do {
+            let rate = biquad?.sampleRate ?? FrequencyResponse.sampleRate
+            let irs = try IRLoader.load(url: url, targetSampleRate: rate)
+            impulseResponse = irs
+            impulseResponseName = url.lastPathComponent
+            EngineLog.log("Loaded IR '\(url.lastPathComponent)' (\(irs[0].count) taps)")
+            if isRunning { restart() }
+        } catch {
+            errorMessage = "IR load failed: \(error.localizedDescription)"
+            EngineLog.log("IR load failed: \(error)")
+        }
+    }
+
+    func clearImpulseResponse() {
+        impulseResponse = nil
+        impulseResponseName = nil
+        if isRunning { restart() }
+    }
+
     /// Debounced persistence so a crash never loses more than ~1 s of edits.
     private var saveWork: DispatchWorkItem?
     private func scheduleSave() {
@@ -588,6 +636,11 @@ final class AudioEngine {
         if let data = try? JSONEncoder().encode(bandsB) {
             UserDefaults.standard.set(data, forKey: "paraeq.bandsB")
         }
+        if let nodes = graphicEQNodes, let data = try? JSONEncoder().encode(nodes) {
+            UserDefaults.standard.set(data, forKey: "paraeq.graphicEQ")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "paraeq.graphicEQ")
+        }
         UserDefaults.standard.set(channelMode.rawValue, forKey: "paraeq.channelMode")
         UserDefaults.standard.set(crossfeedMode.rawValue, forKey: "paraeq.crossfeed")
         UserDefaults.standard.set(balance, forKey: "paraeq.balance")
@@ -604,6 +657,9 @@ final class AudioEngine {
         if let data = UserDefaults.standard.data(forKey: "paraeq.bandsB"),
            let saved = try? JSONDecoder().decode([EQBand].self, from: data),
            !saved.isEmpty { bandsB = saved } else { bandsB = bands }
+        if let data = UserDefaults.standard.data(forKey: "paraeq.graphicEQ"),
+           let nodes = try? JSONDecoder().decode([GraphicEQNode].self, from: data),
+           !nodes.isEmpty { graphicEQNodes = nodes }
         if let raw = UserDefaults.standard.string(forKey: "paraeq.channelMode"),
            let mode = ChannelMode(rawValue: raw) { channelMode = mode }
         if let raw = UserDefaults.standard.string(forKey: "paraeq.crossfeed"),
