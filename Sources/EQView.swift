@@ -94,6 +94,7 @@ struct EQView: View {
                 .onChange(of: engine.selectedOutput) { _, _ in
                     engine.outputSelectionChanged()
                 }
+                .help("Playback device. System Default follows macOS routing automatically")
             }
             HStack {
                 Text("Vol").frame(width: 50, alignment: .leading)
@@ -126,18 +127,21 @@ struct EQView: View {
                         engine.clearImpulseResponse()
                     } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless)
+                        .help("Remove the loaded impulse response")
                 } else if let nodes = engine.graphicEQNodes {
                     Text("GraphicEQ (\(nodes.count) pts)").font(.caption)
                     Button {
                         engine.setGraphicEQ(nil)
                     } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless)
+                        .help("Remove the GraphicEQ curve")
                 } else {
                     Text("None").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Load IR…") { openIRPanel() }
                     .font(.caption)
+                    .help("Load an impulse response file for convolution (room/headphone correction)")
             }
             HStack {
                 Text("XFeed").frame(width: 50, alignment: .leading)
@@ -151,6 +155,7 @@ struct EQView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .help("Headphone crossfeed: bleeds low-passed opposite-channel audio into each ear, like speakers in a room")
             }
             HStack {
                 Text("Pre").frame(width: 50, alignment: .leading)
@@ -163,6 +168,7 @@ struct EQView: View {
                 ))
                 .toggleStyle(.checkbox)
                 .font(.caption)
+                .help("Auto-preamp lowers gain to exactly offset your largest EQ boost, preventing clipping")
                 if engine.autoPreamp {
                     Spacer()
                 } else {
@@ -256,6 +262,7 @@ struct EQView: View {
                 Image(systemName: "square.and.arrow.down")
             }
             .buttonStyle(.borderless)
+            .help("Save the current curve as a preset")
             .popover(isPresented: $showingSavePopover) {
                 VStack(spacing: 8) {
                     Text("Save Preset").font(.headline)
@@ -335,6 +342,7 @@ struct EQView: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.borderless)
+                .help("Delete this preset")
             }
         }
         .padding(.horizontal)
@@ -422,6 +430,7 @@ struct EQView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .fixedSize()
+                .help("Channel mode: one EQ for both channels (Stereo), independent Left/Right, or Mid/Side")
                 if engine.channelMode != .linked {
                     Picker("", selection: $engine.editingB) {
                         Text(engine.channelMode.channelNames.0).tag(false)
@@ -430,6 +439,7 @@ struct EQView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
+                    .help("Select which channel's bands to edit")
                 }
                 Menu("\(engine.activeBands.count) Bands") {
                     ForEach(BandLayout.allCases) { layout in
@@ -441,6 +451,7 @@ struct EQView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .help("Switch band layout (5/10/15/31 ISO bands — resets gains)")
                 Spacer()
                 Button {
                     engine.addBand()
@@ -493,6 +504,7 @@ struct EQView: View {
                 engine.applyAllBands()
                 selectedPresetID = "flat"
             }
+            .help("Reset all bands to a flat 10-band layout")
             Toggle("Start at Login", isOn: Binding(
                 get: { SMAppService.mainApp.status == .enabled },
                 set: { on in
@@ -530,6 +542,7 @@ struct BandRow: View {
                     Toggle("", isOn: $band.enabled)
                         .labelsHidden()
                         .onChange(of: band.enabled) { _, _ in onChange() }
+                        .help("Enable or bypass this band")
 
                     Text("\(index + 1)")
                         .font(.caption.bold())
@@ -573,6 +586,7 @@ struct BandRow: View {
             .buttonStyle(.plain)
             .padding(.horizontal)
             .padding(.vertical, 6)
+            .help("Click to \(isExpanded ? "collapse" : "expand") this band's controls; right-click to remove the band")
 
             // Expanded controls
             if isExpanded {
