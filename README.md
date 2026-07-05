@@ -2,6 +2,8 @@
 
 A system-wide parametric equalizer for macOS, living in your menu bar. Captures system audio through Apple's Core Audio process-tap API (macOS 14.4+), processes it with a native vDSP filter engine, and plays it out to your headphones or speakers — no virtual audio driver, no kernel extensions, no default-device hijacking.
 
+[![CI](https://github.com/wabsto1/ParaEQ/actions/workflows/ci.yml/badge.svg)](https://github.com/wabsto1/ParaEQ/actions/workflows/ci.yml)
+
 Built with SwiftUI and pure CoreAudio/Accelerate — no external dependencies.
 
 ## Features
@@ -43,7 +45,7 @@ Built with SwiftUI and pure CoreAudio/Accelerate — no external dependencies.
 ## Installation
 
 ```bash
-git clone <this repo>
+git clone https://github.com/wabsto1/ParaEQ.git
 cd ParaEQ
 bash build.sh
 cp -R .build/ParaEQ.app /Applications/
@@ -72,6 +74,8 @@ Filter math is RBJ Audio-EQ-Cookbook biquads run through `vDSP_biquadm` with per
 ```bash
 swift test   # 37 DSP/parser tests: coefficients, slopes, limiter, FIR design, convolver, round-trips
 ```
+
+Deeper technical documentation: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
