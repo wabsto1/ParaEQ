@@ -30,6 +30,7 @@ Built with SwiftUI and pure CoreAudio/Accelerate — no external dependencies.
 - **A/B bypass** button for instant EQ on/off comparison
 - Band width shown as **Q or bandwidth-in-octaves** (click the Q label to switch); **＋** adds a band centered in the largest gap of the current curve
 - Stereo peak meter; per-band expandable controls; edited-preset indicator
+- **Pop-out window**: the full UI in a resizable window (graph scales up) alongside the menu-bar panel
 - Global **preset hotkeys ⌘⌃1–9**
 
 **Presets & interop**

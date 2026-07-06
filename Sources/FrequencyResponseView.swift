@@ -10,6 +10,8 @@ struct FrequencyResponseView: View {
     /// empty = hidden.
     var spectrumPre: [Float] = []
     var spectrumPost: [Float] = []
+    /// Pop-out window: let the graph grow with the window.
+    var flexibleHeight = false
     var onChange: () -> Void = {}
 
     @State private var draggedBand: Int?
@@ -44,7 +46,8 @@ struct FrequencyResponseView: View {
             }
             .gesture(dragGesture(plotRect: plotRect))
         }
-        .frame(height: graphHeight)
+        .frame(minHeight: graphHeight,
+               maxHeight: flexibleHeight ? .infinity : graphHeight)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
     }

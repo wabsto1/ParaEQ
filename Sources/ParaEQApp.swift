@@ -14,5 +14,12 @@ struct ParaEQApp: App {
             EQView(engine: engine)
         }
         .menuBarExtraStyle(.window)
+
+        // Pop-out: the same UI in a resizable window (spectrum watching,
+        // side-by-side use). Shares the one engine with the panel.
+        Window("ParaEQ", id: "popout") {
+            EQView(engine: engine, inWindow: true)
+        }
+        .defaultSize(width: 520, height: 880)
     }
 }

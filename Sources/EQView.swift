@@ -4,16 +4,29 @@ import UniformTypeIdentifiers
 
 struct EQView: View {
     @Bindable var engine: AudioEngine
+    /// true when hosted in the resizable pop-out window rather than the
+    /// menu-bar panel (flexible layout, no pop-out button).
+    var inWindow = false
     @State private var presetManager = PresetManager()
     @State private var hintState = HintState()
     @State private var selectedBand: Int?
     @State private var keyMonitor: Any?
+    @State private var hostWindow: NSWindow?
+    @Environment(\.openWindow) private var openWindow
     /// Graph gain range setting; 0 = auto-scale to the current curve.
     @AppStorage("paraeq.graphSpan") private var graphSpanSetting: Double = 24
     /// Show band width as octaves instead of Q.
     @AppStorage("paraeq.bandwidthOct") private var bandwidthOct = false
 
     var body: some View {
+        if inWindow {
+            core.frame(minWidth: 440, minHeight: 720)
+        } else {
+            core.frame(width: 440, height: 816)
+        }
+    }
+
+    private var core: some View {
         VStack(spacing: 0) {
             headerSection
             Divider()
@@ -41,7 +54,8 @@ struct EQView: View {
                 selectedBand: $selectedBand,
                 dbSpan: effectiveGraphSpan,
                 spectrumPre: engine.spectrumPre,
-                spectrumPost: engine.spectrumPost
+                spectrumPost: engine.spectrumPost,
+                flexibleHeight: inWindow
             ) {
                 engine.applyAllBands()
             }
@@ -53,7 +67,7 @@ struct EQView: View {
             footerSection
         }
         .environment(hintState)
-        .frame(width: 440, height: 816)
+        .background(WindowAccessor { hostWindow = $0 })
         .onAppear {
             engine.presetLookup = { [weak presetManager] id in
                 presetManager?.allPresets.first { $0.id == id }
@@ -137,8 +151,12 @@ struct EQView: View {
 
     /// Returns true when the event was consumed.
     private func handleKey(_ event: NSEvent) -> Bool {
+        // Local monitors are app-wide; when the panel AND the pop-out window
+        // are both open, two EQViews are alive — only the instance whose
+        // window received the event may handle it, or ⌘Z would fire twice.
+        guard let window = event.window, window === hostWindow else { return false }
         // Never steal keys from an active text field (preset name etc.).
-        if event.window?.firstResponder is NSTextView { return false }
+        if window.firstResponder is NSTextView { return false }
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = event.charactersIgnoringModifiers?.lowercased()
         if key == "z", mods == .command { engine.undoEdit(); return true }
@@ -201,6 +219,16 @@ struct EQView: View {
                 .font(.title2)
             Text("ParaEQ")
                 .font(.headline)
+            if !inWindow {
+                Button {
+                    openWindow(id: "popout")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "macwindow")
+                }
+                .buttonStyle(.borderless)
+                .helpHint("Open ParaEQ in a resizable window")
+            }
             Spacer()
             if engine.isRunning {
                 Button {
@@ -703,6 +731,25 @@ struct EQView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
+    }
+}
+
+// MARK: - Window accessor
+//
+// Captures the NSWindow hosting a SwiftUI view, so the keyboard monitor can
+// tell which EQView instance an event belongs to.
+
+private struct WindowAccessor: NSViewRepresentable {
+    var onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in onWindow(view?.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in onWindow(nsView?.window) }
     }
 }
 

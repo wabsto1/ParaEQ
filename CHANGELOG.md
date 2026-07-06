@@ -24,6 +24,9 @@ Workflow and visualization release (inspired by a feature review against
   diverged from the selected preset.
 - Four new built-in presets: Loudness, Podcast, Electronic, Rock.
 - **?** button opening the user guide.
+- **Pop-out window**: the window icon in the header opens the full UI in a
+  resizable window (graph height scales); shares the engine with the panel,
+  and keyboard handling is scoped per window.
 - 15 new unit tests (spectrum calibration, undo history coalescing,
   bandwidth conversion round-trip, suggested-band placement, auto range).
 

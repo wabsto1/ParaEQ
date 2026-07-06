@@ -49,6 +49,10 @@ Top to bottom:
 - **Start/Stop** — engages or disengages processing. **A/B** (visible while
   running) toggles bypass: the EQ, FIR, and crossfeed stages are skipped so
   you can compare processed vs. unprocessed instantly.
+- **Pop-out** (window icon next to the title) — opens the same interface in
+  a **resizable window** that stays open while you work in other apps; the
+  graph grows with the window, which suits spectrum-watching. The panel and
+  the window control the same engine and stay in sync.
 - **Output** — which device ParaEQ plays to. "System Default" follows whatever
   macOS routes audio to (recommended); picking a specific device locks output
   there. Unplugging a device or changing the system default is handled
