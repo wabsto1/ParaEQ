@@ -37,6 +37,7 @@ private final class IOCtx {
     let limiter: Limiter
     let crossfeed: Crossfeed?
     let convolver: FIRConvolver?
+    let spectrum: SpectrumTap?
     let midSide: Bool
     let maxFrames: Int
     let stageL: UnsafeMutablePointer<Float>
@@ -52,7 +53,7 @@ private final class IOCtx {
     var callbackCount: UInt64 = 0
 
     init(eq: BiquadEQ, limiter: Limiter, crossfeed: Crossfeed?,
-         convolver: FIRConvolver?, midSide: Bool,
+         convolver: FIRConvolver?, spectrum: SpectrumTap?, midSide: Bool,
          maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
          balancePtr: UnsafeMutablePointer<Float>, bypassPtr: UnsafeMutablePointer<Float>,
@@ -61,6 +62,7 @@ private final class IOCtx {
         self.limiter = limiter
         self.crossfeed = crossfeed
         self.convolver = convolver
+        self.spectrum = spectrum
         self.midSide = midSide
         self.maxFrames = maxFrames
         self.preampPtr = preampPtr
@@ -135,6 +137,16 @@ final class AudioEngine {
     var errorMessage: String?
     var peakL: Float = 0
     var peakR: Float = 0
+    /// Live spectrum display (dB per log-spaced bin), fed by the meter timer.
+    var showSpectrum = true
+    var spectrumPre: [Float] = []
+    var spectrumPost: [Float] = []
+    var canUndo = false
+    var canRedo = false
+    @ObservationIgnored private var spectrumTap: SpectrumTap?
+    @ObservationIgnored private let spectrumFreqs =
+        FrequencyResponse.logFrequencies(count: 120)
+    @ObservationIgnored private var history: EditHistory<EQEditState>!
 
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -162,6 +174,7 @@ final class AudioEngine {
 
     init() {
         loadState()
+        history = EditHistory(initial: currentEditState)
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil, queue: .main
@@ -255,6 +268,7 @@ final class AudioEngine {
         isRunning = false
         activeOutputUID = nil
         peakL = 0; peakR = 0
+        spectrumPre = []; spectrumPost = []
         if rememberOff { UserDefaults.standard.set(false, forKey: "paraeq.wasRunning") }
         saveState()
     }
@@ -344,11 +358,14 @@ final class AudioEngine {
         if convolver != nil {
             EngineLog.log("FIR stage active (\(impulseResponseName ?? "GraphicEQ"))")
         }
+        let spectrum = SpectrumTap(sampleRate: biquad!.sampleRate)
+        spectrumTap = spectrum
         let ctx = IOCtx(eq: biquad!,
                         limiter: Limiter(sampleRate: biquad!.sampleRate),
                         crossfeed: crossfeedMode == .off ? nil
                             : Crossfeed(mode: crossfeedMode, sampleRate: biquad!.sampleRate),
                         convolver: convolver,
+                        spectrum: spectrum,
                         midSide: channelMode == .midSide,
                         maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
@@ -362,7 +379,7 @@ final class AudioEngine {
             let c = um.takeUnretainedValue()
             c.callbackCount &+= 1
 
-            // 1. Stage tap input as planar L/R with preamp applied
+            // 1. Stage tap input as planar L/R
             //    (handles interleaved or planar input layouts).
             var frames = 0
             var channel = 0
@@ -376,7 +393,7 @@ final class AudioEngine {
                 frames = min(Int(buf.mDataByteSize) / (n * 4), c.maxFrames)
                 for ch in 0..<n where channel < 2 {
                     let dst = channel == 0 ? c.stageL : c.stageR
-                    for f in 0..<frames { dst[f] = data[f * n + ch] * preamp }
+                    for f in 0..<frames { dst[f] = data[f * n + ch] }
                     channel += 1
                 }
             }
@@ -385,6 +402,14 @@ final class AudioEngine {
                 for f in 0..<frames { c.stageR[f] = c.stageL[f] }
             }
             guard frames > 0 else { return }
+            // Pre-EQ spectrum sees the raw source, before preamp.
+            c.spectrum?.writePre(l: c.stageL, r: c.stageR, frames: frames)
+            if preamp != 1.0 {
+                for f in 0..<frames {
+                    c.stageL[f] *= preamp
+                    c.stageR[f] *= preamp
+                }
+            }
 
             // 2. [M/S encode] → biquad chain → [M/S decode] → FIR → crossfeed
             //    → balance + volume → lookahead limiter.
@@ -427,6 +452,7 @@ final class AudioEngine {
                 }
             }
             c.limiter.process(l: c.outL, r: c.outR, frames: frames)
+            c.spectrum?.writePost(l: c.outL, r: c.outR, frames: frames)
             let srcL = c.outL
             let srcR = c.outR
 
@@ -511,6 +537,49 @@ final class AudioEngine {
         restart()
     }
 
+    // MARK: - Undo / redo (bands + preamp, slider drags coalesced)
+
+    struct EQEditState: Equatable {
+        var bands: [EQBand]
+        var bandsB: [EQBand]
+        var preamp: Float
+        var autoPreamp: Bool
+    }
+
+    private var currentEditState: EQEditState {
+        EQEditState(bands: bands, bandsB: bandsB,
+                    preamp: preamp, autoPreamp: autoPreamp)
+    }
+
+    private func recordEditState() {
+        history.recordEdit(currentEditState)
+        canUndo = history.canUndo
+        canRedo = history.canRedo
+    }
+
+    func undoEdit() {
+        guard let state = history.undo(current: currentEditState) else { return }
+        applyEditState(state)
+    }
+
+    func redoEdit() {
+        guard let state = history.redo(current: currentEditState) else { return }
+        applyEditState(state)
+    }
+
+    private func applyEditState(_ state: EQEditState) {
+        let countChanged = state.bands.count != bands.count
+            || state.bandsB.count != bandsB.count
+        bands = state.bands
+        bandsB = state.bandsB
+        autoPreamp = state.autoPreamp
+        preamp = state.preamp
+        preampLinearPtr?.pointee = powf(10.0, state.preamp / 20.0)
+        bandStructureChanged(countChanged: countChanged)
+        canUndo = history.canUndo
+        canRedo = history.canRedo
+    }
+
     // MARK: - Band updates
 
     func applyBand(at index: Int) {
@@ -522,9 +591,11 @@ final class AudioEngine {
         if let biquad, !biquad.update(bandsA: bands, bandsB: setB), isRunning {
             // Section count changed (crossover type toggled) — rebuild chain.
             restart()
+            recordEditState()
             return
         }
         if autoPreamp { computeAutoPreamp() }
+        recordEditState()
         scheduleSave()
     }
 
@@ -535,7 +606,12 @@ final class AudioEngine {
         }
         channelMode = mode
         editingB = false
-        if isRunning { restart() } else { applyAllBands() }
+        if isRunning {
+            restart()
+            recordEditState()
+        } else {
+            applyAllBands()
+        }
         scheduleSave()
     }
 
@@ -658,9 +734,9 @@ final class AudioEngine {
         bandStructureChanged(countChanged: countChanged)
     }
 
+    /// Adds a band centered in the largest frequency gap, Q matched to it.
     func addBand() {
-        activeBands.append(EQBand(frequency: 1000, gain: 0, q: 1.41,
-                                  filterType: .parametric, enabled: true))
+        activeBands.append(makeSuggestedBand(existing: activeBands))
         bandStructureChanged(countChanged: true)
     }
 
@@ -675,6 +751,7 @@ final class AudioEngine {
     private func bandStructureChanged(countChanged: Bool) {
         if countChanged, isRunning {
             restart()
+            recordEditState()
         } else {
             applyAllBands()
         }
@@ -690,6 +767,23 @@ final class AudioEngine {
     func setPreamp(_ dB: Float) {
         preamp = dB
         preampLinearPtr?.pointee = powf(10.0, dB / 20.0)
+        recordEditState()
+        scheduleSave()
+    }
+
+    func setAutoPreamp(_ on: Bool) {
+        autoPreamp = on
+        if on { computeAutoPreamp() }
+        recordEditState()
+        scheduleSave()
+    }
+
+    func setShowSpectrum(_ on: Bool) {
+        showSpectrum = on
+        if !on {
+            spectrumPre = []
+            spectrumPost = []
+        }
         scheduleSave()
     }
 
@@ -724,6 +818,7 @@ final class AudioEngine {
         UserDefaults.standard.set(balance, forKey: "paraeq.balance")
         UserDefaults.standard.set(volume, forKey: "paraeq.volume")
         UserDefaults.standard.set(autoPreamp, forKey: "paraeq.autoPreamp")
+        UserDefaults.standard.set(showSpectrum, forKey: "paraeq.showSpectrum")
         if !autoPreamp { UserDefaults.standard.set(preamp, forKey: "paraeq.preamp") }
         UserDefaults.standard.set(selectedOutput?.uid ?? "", forKey: "paraeq.outputUID")
     }
@@ -748,6 +843,9 @@ final class AudioEngine {
         if UserDefaults.standard.object(forKey: "paraeq.autoPreamp") != nil {
             autoPreamp = UserDefaults.standard.bool(forKey: "paraeq.autoPreamp")
         }
+        if UserDefaults.standard.object(forKey: "paraeq.showSpectrum") != nil {
+            showSpectrum = UserDefaults.standard.bool(forKey: "paraeq.showSpectrum")
+        }
         if !autoPreamp {
             preamp = UserDefaults.standard.float(forKey: "paraeq.preamp")
         }
@@ -766,6 +864,11 @@ final class AudioEngine {
             let rawR = rp.pointee; rp.pointee = 0
             self.peakL = max(rawL, self.peakL * 0.85)
             self.peakR = max(rawR, self.peakR * 0.85)
+            if self.showSpectrum, let tap = self.spectrumTap {
+                let (pre, post) = tap.analyze(frequencies: self.spectrumFreqs)
+                self.spectrumPre = pre
+                self.spectrumPost = post
+            }
             self.meterTicks += 1
             if self.meterTicks % 300 == 0, let ctx = self.ioCtx?.takeUnretainedValue() {
                 EngineLog.log(String(format: "status: callbacks=%llu peakL=%.3f peakR=%.3f",
@@ -791,6 +894,7 @@ final class AudioEngine {
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
         ioCtx?.release(); ioCtx = nil
+        spectrumTap = nil
         biquad = nil
         if let p = volumePtr { p.deallocate(); volumePtr = nil }
         if let p = balancePtr { p.deallocate(); balancePtr = nil }

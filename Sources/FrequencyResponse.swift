@@ -51,4 +51,10 @@ enum FrequencyResponse {
         let curve = responseCurve(for: bands, pointCount: 200)
         return Float(curve.max() ?? 0)
     }
+
+    /// Largest |dB| of the combined curve (used for graph auto-scaling).
+    static func peakAbsGainDB(for bands: [EQBand]) -> Double {
+        let curve = responseCurve(for: bands, pointCount: 200)
+        return curve.map(abs).max() ?? 0
+    }
 }

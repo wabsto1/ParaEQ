@@ -2,6 +2,14 @@ import SwiftUI
 
 struct FrequencyResponseView: View {
     @Binding var bands: [EQBand]
+    /// Band highlighted for keyboard editing; set by clicks/drags here.
+    @Binding var selectedBand: Int?
+    /// Half-range of the gain axis (±6/12/18/24 dB).
+    var dbSpan: Double = 24
+    /// Live spectra in dB (SpectrumTap.floorDB…0), log-spaced 20 Hz–20 kHz;
+    /// empty = hidden.
+    var spectrumPre: [Float] = []
+    var spectrumPost: [Float] = []
     var onChange: () -> Void = {}
 
     @State private var draggedBand: Int?
@@ -9,9 +17,11 @@ struct FrequencyResponseView: View {
     private let graphHeight: CGFloat = 130
     private let leftMargin: CGFloat = 28
     private let bottomMargin: CGFloat = 14
-    private let dbRange: ClosedRange<Double> = -24...24
+    private var dbRange: ClosedRange<Double> { -dbSpan...dbSpan }
 
-    private let dbLines: [Double] = [-24, -18, -12, -6, 0, 6, 12, 18, 24]
+    private var dbLines: [Double] {
+        stride(from: -dbSpan, through: dbSpan, by: dbSpan / 4).map { $0 }
+    }
     private let freqLines: [(Double, String)] = [
         (50, "50"), (100, "100"), (200, "200"), (500, "500"),
         (1000, "1k"), (2000, "2k"), (5000, "5k"), (10000, "10k"), (20000, "20k"),
@@ -24,6 +34,10 @@ struct FrequencyResponseView: View {
                                   height: geo.size.height - bottomMargin)
             Canvas { context, size in
                 drawGrid(context: context, plotRect: plotRect, fullSize: size)
+                drawSpectrum(context: context, plotRect: plotRect,
+                             values: spectrumPre, color: .cyan, fill: 0.06, line: 0.25)
+                drawSpectrum(context: context, plotRect: plotRect,
+                             values: spectrumPost, color: .orange, fill: 0.10, line: 0.40)
                 drawBandCurves(context: context, plotRect: plotRect)
                 drawCombinedCurve(context: context, plotRect: plotRect)
                 drawBandDots(context: context, plotRect: plotRect)
@@ -35,6 +49,29 @@ struct FrequencyResponseView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - Live spectrum overlay (own dB scale: floorDB…0 → plot height)
+
+    private func drawSpectrum(context: GraphicsContext, plotRect: CGRect,
+                              values: [Float], color: Color,
+                              fill: Double, line: Double) {
+        guard values.count > 1 else { return }
+        let floorDB = Double(SpectrumTap.floorDB)
+        var path = Path()
+        for (i, db) in values.enumerated() {
+            let x = plotRect.minX + CGFloat(i) / CGFloat(values.count - 1) * plotRect.width
+            let t = (min(max(Double(db), floorDB), 0) - floorDB) / -floorDB
+            let y = plotRect.maxY - CGFloat(t) * plotRect.height
+            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+            else { path.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        var fillPath = path
+        fillPath.addLine(to: CGPoint(x: plotRect.maxX, y: plotRect.maxY))
+        fillPath.addLine(to: CGPoint(x: plotRect.minX, y: plotRect.maxY))
+        fillPath.closeSubpath()
+        context.fill(fillPath, with: .color(color.opacity(fill)))
+        context.stroke(path, with: .color(color.opacity(line)), lineWidth: 1)
+    }
+
     // MARK: - Drag-to-edit (drag a band dot: x = frequency, y = gain)
 
     private func dragGesture(plotRect: CGRect) -> some Gesture {
@@ -42,6 +79,7 @@ struct FrequencyResponseView: View {
             .onChanged { value in
                 if draggedBand == nil {
                     draggedBand = nearestBand(to: value.startLocation, in: plotRect)
+                    selectedBand = draggedBand
                 }
                 guard let i = draggedBand, bands.indices.contains(i) else { return }
                 let freq = xToFreq(value.location.x, in: plotRect)
@@ -162,7 +200,7 @@ struct FrequencyResponseView: View {
         let combinedCurve = FrequencyResponse.responseCurve(for: bands, pointCount: pointCount)
         let freqs = FrequencyResponse.logFrequencies(count: pointCount)
 
-        for band in bands {
+        for (i, band) in bands.enumerated() {
             guard band.enabled else { continue }
             let f = Double(band.frequency)
             let x = freqToX(f, in: plotRect)
@@ -181,6 +219,10 @@ struct FrequencyResponseView: View {
             let y = dbToY(combinedDB, in: plotRect)
             let dot = Path(ellipseIn: CGRect(x: x - 3, y: y - 3, width: 6, height: 6))
             context.fill(dot, with: .color(.accentColor))
+            if i == selectedBand {
+                let ring = Path(ellipseIn: CGRect(x: x - 6, y: y - 6, width: 12, height: 12))
+                context.stroke(ring, with: .color(.accentColor), lineWidth: 1.5)
+            }
         }
     }
 

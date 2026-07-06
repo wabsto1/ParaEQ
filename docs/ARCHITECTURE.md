@@ -8,7 +8,9 @@ System audio (all apps except ParaEQ)
   → private aggregate device              (real output device = main sub-device,
                                            tap in the tap list, drift compensation)
   → single IOProc on a dedicated queue:
-      1. stage tap input as planar L/R    (interleaved or planar handled), × preamp
+      1. stage tap input as planar L/R    (interleaved or planar handled)
+         → pre-EQ spectrum ring write     (mono mix, lock-free)
+         → × preamp
       2. [bypass? skip 2–4]
          [Mid/Side encode]
          vDSP_biquadm cascade chain       (per-channel coefficient sets)
@@ -18,6 +20,7 @@ System audio (all apps except ParaEQ)
          crossfeed                        (low-passed opposite-channel bleed)
       3. balance + volume
       4. lookahead limiter                (5 ms, linked stereo)
+         → post-EQ spectrum ring write
       5. copy to device output buffers, track peaks
 ```
 
@@ -36,6 +39,9 @@ default device is never modified. A crash cannot leave the machine silent.
 | `Sources/Crossfeed.swift` | Channel modes, crossfeed processor |
 | `Sources/IRLoader.swift` | IR file loading/resampling via AVAudioFile |
 | `Sources/FrequencyResponse.swift` | Graph/auto-preamp math (same coefficients as audio) |
+| `Sources/Spectrum.swift` | Lock-free spectrum capture rings + Hann/FFT analysis (`SpectrumTap`) |
+| `Sources/EditHistory.swift` | Generic undo/redo stack with gesture coalescing |
+| `Sources/BandUtils.swift` | Q↔octave conversion, suggested-band placement, graph auto-range |
 | `Sources/AutoEQParser.swift` | Equalizer APO Parametric/GraphicEQ import + export |
 | `Sources/HotkeyManager.swift` | Carbon global hotkeys (no Accessibility permission needed) |
 | `Sources/EQView.swift`, `FrequencyResponseView.swift`, `AutoEQPickerView.swift`, `LevelMeterView.swift` | SwiftUI menu-bar UI |
@@ -85,15 +91,27 @@ These cost real debugging time; do not regress them.
 - Limiter: linked-stereo sliding-window minimum over the lookahead window
   (monotonic deque, O(1) amortized per sample), instant attack by construction,
   exponential release, safety clamp at ±1.
+- Spectrum analyzer: the IO thread writes mono-mixed samples into two
+  2048-sample rings (single writer, plain stores — a read may tear by one
+  callback at the seam, which the Hann window makes invisible). The meter
+  timer (30 fps, main thread) snapshots each ring, windows, runs
+  `vDSP_fft_zrip`, and peak-picks magnitudes into 120 log-spaced display
+  bins (geometric-midpoint boundaries). Calibrated so a 0 dBFS sine reads
+  0 dB (`refDB = 20·log10(N/2)` with the denormalized Hann window);
+  release-smoothed at 3 dB/frame. Undo/redo snapshots (bands + preamp) are
+  recorded through the same `applyAllBands`/`setPreamp` funnels the UI
+  already uses, with sub-0.8 s bursts coalesced into one step.
 
 ## Testing
 
-`swift test` — 37 tests covering coefficient correctness (center gains, shelf
+`swift test` — 52 tests covering coefficient correctness (center gains, shelf
 asymptotes, crossover slopes/-3 dB/-6 dB points), the vDSP chain end-to-end
 (sine gain, transparency, per-channel independence), limiter behavior (ceiling,
 transparency, crest-factor preservation, transient catching), FIR design
-accuracy, streaming convolution (identity, delay, multi-partition), and
-Equalizer APO import/export round-trips.
+accuracy, streaming convolution (identity, delay, multi-partition),
+Equalizer APO import/export round-trips, spectrum calibration (0 dBFS sine,
+floor, release), undo-history coalescing, Q↔octave round-trips, and
+suggested-band/auto-range placement.
 
 Live verification: `~/Library/Logs/ParaEQ.log` logs engine starts, device
 changes, and a status line (callback count + peaks) every 10 s while running.

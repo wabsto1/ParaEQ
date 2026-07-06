@@ -62,22 +62,36 @@ Top to bottom:
 - **Pre** — preamp. **Auto** (recommended) lowers gain exactly enough that
   your biggest EQ boost cannot clip; uncheck it for a manual preamp slider.
 - **Level meter** — post-limiter stereo peaks while running.
-- **Preset row** — see Presets below.
+- **Preset row** — see Presets below. An **orange dot** next to the preset
+  menu means your current curve has been edited away from the selected
+  preset — use Save to keep it.
+- **Graph toolbar** — undo (⌘Z) / redo (⇧⌘Z) of EQ edits, the **spectrum
+  toggle** (waveform icon, while running), and the **gain-range menu**
+  (±6/12/18/24 dB or Auto, which fits the range to your current curve).
 - **Frequency-response graph** — the exact curve the audio path applies.
   **Drag a band's dot** to change its frequency (horizontal) and gain
-  (vertical). Faint lines show individual bands; the bold line is the sum.
+  (vertical); the dragged band gets a selection ring. Faint lines show
+  individual bands; the bold line is the sum. With the spectrum enabled, a
+  **live spectrum analyzer** draws behind the curve: **cyan = source audio
+  (pre-EQ), orange = after EQ** — you can watch your boosts and cuts act on
+  real program material.
 - **Channel/band controls** — see below.
 - **Reset** — back to a flat 10-band layout. **Start at Login** — launches
   ParaEQ automatically (processing auto-resumes if it was running when you
-  quit). **Quit** — stops processing and exits.
+  quit). **?** opens this guide. **Quit** — stops processing and exits.
 
 ## Bands
 
 - The **N Bands** menu switches layouts: 5, 10, 15, or 31 bands at standard
   ISO frequencies (gains reset when switching).
-- **＋** adds a band; **right-click a band row → Remove Band** deletes one.
+- **＋** adds a band **centered in the largest gap** of your current layout,
+  with Q matched to the gap width; **right-click a band row → Remove Band**
+  deletes one.
 - Click a band row to expand it: filter type, frequency (20 Hz–20 kHz, log),
   gain (±24 dB), and Q (0.1–30, log). The checkbox enables/disables the band.
+- **Q or octaves**: click the **Q** label (in a band row or its expanded
+  controls) to switch the width display between Q factor and **bandwidth in
+  octaves** — the two are equivalent; use whichever you think in.
 - Filter types: **Peak** (parametric bell), **Low/High Shelf**, **Low/High
   Pass** (Q-adjustable), **Band Pass**, **Notch**, plus fixed-slope crossover
   types — **BW 6/24 dB-oct** (Butterworth) and **LR 12/24 dB-oct**
@@ -96,9 +110,29 @@ The channel picker above the band list selects how the two channels are EQ'd:
 
 The graph and band list always show the set selected by the tabs.
 
+## Keyboard shortcuts
+
+While the ParaEQ window is open:
+
+| Keys | Action |
+|---|---|
+| **Tab / ⇧Tab** | Select the next / previous band (highlighted in the list and on the graph) |
+| **↑ / ↓** | Selected band's gain ±0.5 dB (**⇧** for ±0.1 dB) |
+| **← / →** | Selected band's frequency down/up one semitone (**⇧** for fine steps) |
+| **⌘Z / ⇧⌘Z** | Undo / redo EQ edits (slider drags count as one edit) |
+| **⌘B** | Toggle A/B bypass (while running) |
+
+System-wide (even when ParaEQ isn't focused): **⌘⌃1–9** apply the first nine
+presets in menu order.
+
 ## Presets
 
-- The preset menu applies built-ins or your saved presets.
+- The preset menu applies built-ins or your saved presets. Built-ins include
+  tonal starters (Bass Boost, Vocal Clarity, Treble Boost, **Loudness,
+  Podcast, Electronic, Rock**) alongside Flat and headphone corrections.
+- An **orange dot** appears when the current curve differs from the selected
+  preset. Built-ins are never overwritten — Save your edited version under a
+  new name.
 - **Save** (💾) stores the current curve under a name. **Delete** (🗑) removes
   a custom preset.
 - **Import** (📄+) reads Equalizer APO / AutoEQ files — both `ParametricEQ.txt`
@@ -237,6 +271,16 @@ Q-adjustable Low/High Pass types are usually all you need.
 - **Peak meter / dBFS** — the bars show the post-limiter peak level per
   channel. Digital audio clips at full scale (0 dBFS); the limiter's ceiling
   sits just below it.
+- **Spectrum analyzer** — a live view of how much energy the audio contains
+  at each frequency (FFT of the last ~43 ms, updated 30×/s). ParaEQ shows two:
+  **cyan** is the source before any processing, **orange** is after the full
+  EQ chain — the vertical distance between them at any frequency is what your
+  settings are actually doing to the material playing right now. The spectrum
+  uses its own level scale (0 dBFS at the top of the graph, −90 dB at the
+  bottom), independent of the EQ-curve gain range.
+- **Bandwidth (octaves)** — an alternative way to state a filter's width:
+  the distance between its half-gain points measured in octaves. Q 1.41 ≈ 1
+  octave; Q 4.32 ≈ ⅓ octave. Click the Q label to switch displays.
 
 ## Troubleshooting
 

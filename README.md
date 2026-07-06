@@ -23,13 +23,17 @@ Built with SwiftUI and pure CoreAudio/Accelerate — no external dependencies.
 - **Lookahead limiter** (5 ms lookahead, instant attack, smooth release) instead of a clipper
 
 **Interface**
-- Live frequency-response graph computed from the *exact* coefficients the audio path runs — **drag band dots** to edit frequency/gain directly
+- **Real-time spectrum analyzer**: pre-EQ (cyan) and post-EQ (orange) spectra drawn live behind the response curve — watch your EQ act on the actual program material
+- Live frequency-response graph computed from the *exact* coefficients the audio path runs — **drag band dots** to edit frequency/gain directly; ±6/12/18/24 dB or auto-scaling gain range
+- **Undo/redo** (⌘Z/⇧⌘Z) for all EQ edits, with slider drags coalesced into single steps
+- **Keyboard editing**: Tab cycles band selection, arrow keys nudge gain/frequency (⇧ for fine steps), ⌘B toggles bypass
 - **A/B bypass** button for instant EQ on/off comparison
-- Stereo peak meter; per-band expandable controls
+- Band width shown as **Q or bandwidth-in-octaves** (click the Q label to switch); **＋** adds a band centered in the largest gap of the current curve
+- Stereo peak meter; per-band expandable controls; edited-preset indicator
 - Global **preset hotkeys ⌘⌃1–9**
 
 **Presets & interop**
-- Built-in and custom presets; **pin a preset to an output device** and it applies automatically when audio routes there
+- Built-in tonal and genre presets (Loudness, Podcast, Electronic, Rock, …) plus custom presets; **pin a preset to an output device** and it applies automatically when audio routes there
 - **AutoEQ database browser** — search thousands of headphone correction profiles and apply them in one click
 - **Import** Equalizer APO / AutoEQ files (`Preamp:`, `Filter N:`, `GraphicEQ:` lines, Q or BW Oct)
 - **Export** your curve as Equalizer APO `ParametricEQ.txt` (round-trip compatible)
@@ -76,7 +80,7 @@ Filter math is RBJ Audio-EQ-Cookbook biquads run through `vDSP_biquadm` with per
 ## Testing
 
 ```bash
-swift test   # 37 DSP/parser tests: coefficients, slopes, limiter, FIR design, convolver, round-trips
+swift test   # 52 DSP/parser/logic tests: coefficients, slopes, limiter, FIR design, convolver, round-trips, spectrum calibration, undo history
 ```
 
 **[User Guide](docs/USER-GUIDE.md)** (installation, permissions, every feature) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)

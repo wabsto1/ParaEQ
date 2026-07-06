@@ -96,7 +96,9 @@ struct EQPreset: Codable, Identifiable, Equatable {
         Self.builtIn.contains { $0.id == id }
     }
 
-    static let builtIn: [EQPreset] = [flat, bassBoost, vocalClarity, trebleBoost, t5pHarman, t5pBassBoost]
+    static let builtIn: [EQPreset] = [flat, bassBoost, vocalClarity, trebleBoost,
+                                      loudness, podcast, electronic, rock,
+                                      t5pHarman, t5pBassBoost]
 
     static let flat = EQPreset(
         id: "flat", name: "Flat",
@@ -128,6 +130,38 @@ struct EQPreset: Codable, Identifiable, Equatable {
         bands[8].gain = 4.5   // 8 kHz
         bands[9].gain = 5.0   // 16 kHz
         return EQPreset(id: "treble-boost", name: "Treble Boost", bands: bands)
+    }()
+
+    // Equal-loudness compensation for low listening levels (mild V shape).
+    static let loudness: EQPreset = {
+        var bands = makeDefaultBands()
+        let gains: [Float] = [5, 4, 2, 0, -1, -1, 0, 1.5, 3, 3.5]
+        for (i, g) in gains.enumerated() { bands[i].gain = g }
+        return EQPreset(id: "loudness", name: "Loudness", bands: bands)
+    }()
+
+    // Spoken word: cut rumble, lift presence and articulation.
+    static let podcast: EQPreset = {
+        var bands = makeDefaultBands()
+        let gains: [Float] = [-8, -4, 0, 1, 2, 3, 3, 2, 0.5, -1]
+        for (i, g) in gains.enumerated() { bands[i].gain = g }
+        return EQPreset(id: "podcast", name: "Podcast", bands: bands)
+    }()
+
+    // Electronic: sub-bass weight plus air, mids untouched.
+    static let electronic: EQPreset = {
+        var bands = makeDefaultBands()
+        let gains: [Float] = [4.5, 3.5, 1, 0, -0.5, 0, 0.5, 1, 2.5, 3.5]
+        for (i, g) in gains.enumerated() { bands[i].gain = g }
+        return EQPreset(id: "electronic", name: "Electronic", bands: bands)
+    }()
+
+    // Rock: gentle V with guitar presence around 2–4 kHz.
+    static let rock: EQPreset = {
+        var bands = makeDefaultBands()
+        let gains: [Float] = [3, 2, 0.5, -0.5, -1, 0.5, 2, 2.5, 2, 1]
+        for (i, g) in gains.enumerated() { bands[i].gain = g }
+        return EQPreset(id: "rock", name: "Rock", bands: bands)
     }()
 
     // Beyerdynamic T5p 2nd Gen — corrective EQ toward Harman target

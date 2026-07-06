@@ -6,6 +6,12 @@ struct EQView: View {
     @Bindable var engine: AudioEngine
     @State private var presetManager = PresetManager()
     @State private var hintState = HintState()
+    @State private var selectedBand: Int?
+    @State private var keyMonitor: Any?
+    /// Graph gain range setting; 0 = auto-scale to the current curve.
+    @AppStorage("paraeq.graphSpan") private var graphSpanSetting: Double = 24
+    /// Show band width as octaves instead of Q.
+    @AppStorage("paraeq.bandwidthOct") private var bandwidthOct = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,10 +32,17 @@ struct EQView: View {
             Divider()
             presetSection
             Divider()
-            FrequencyResponseView(bands: Binding(
-                get: { engine.activeBands },
-                set: { engine.activeBands = $0 }
-            )) {
+            graphControls
+            FrequencyResponseView(
+                bands: Binding(
+                    get: { engine.activeBands },
+                    set: { engine.activeBands = $0 }
+                ),
+                selectedBand: $selectedBand,
+                dbSpan: effectiveGraphSpan,
+                spectrumPre: engine.spectrumPre,
+                spectrumPost: engine.spectrumPost
+            ) {
                 engine.applyAllBands()
             }
             Divider()
@@ -40,16 +53,144 @@ struct EQView: View {
             footerSection
         }
         .environment(hintState)
-        .frame(width: 440, height: 790)
+        .frame(width: 440, height: 816)
         .onAppear {
             engine.presetLookup = { [weak presetManager] id in
                 presetManager?.allPresets.first { $0.id == id }
             }
             registerHotkeys()
+            installKeyMonitor()
+        }
+        .onDisappear {
+            removeKeyMonitor()
         }
         .onChange(of: presetManager.customPresets.count) { _, _ in
             registerHotkeys()
         }
+        .onChange(of: engine.activeBands.count) { _, _ in
+            selectedBand = nil
+        }
+    }
+
+    // MARK: - Graph controls (undo/redo, spectrum toggle, gain range)
+
+    private var effectiveGraphSpan: Double {
+        graphSpanSetting == 0
+            ? GraphRange.auto(forPeakAbsDB:
+                FrequencyResponse.peakAbsGainDB(for: engine.activeBands))
+            : graphSpanSetting
+    }
+
+    private var graphControls: some View {
+        HStack(spacing: 10) {
+            Button { engine.undoEdit() } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!engine.canUndo)
+            .helpHint("Undo the last EQ edit (⌘Z)")
+            Button { engine.redoEdit() } label: {
+                Image(systemName: "arrow.uturn.forward")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!engine.canRedo)
+            .helpHint("Redo (⇧⌘Z)")
+            Spacer()
+            if engine.isRunning {
+                Button { engine.setShowSpectrum(!engine.showSpectrum) } label: {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(engine.showSpectrum
+                            ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.borderless)
+                .helpHint("Live spectrum: cyan = source audio, orange = after EQ")
+            }
+            Menu(graphSpanSetting == 0 ? "Auto" : "±\(Int(graphSpanSetting)) dB") {
+                Button("Auto") { graphSpanSetting = 0 }
+                ForEach(GraphRange.choices, id: \.self) { r in
+                    Button("±\(Int(r)) dB") { graphSpanSetting = r }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .helpHint("Gain range of the response graph (Auto fits the current curve)")
+        }
+        .padding(.horizontal)
+        .padding(.top, 4)
+    }
+
+    // MARK: - Keyboard editing (local monitor while the panel is open)
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handleKey(event) ? nil : event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    /// Returns true when the event was consumed.
+    private func handleKey(_ event: NSEvent) -> Bool {
+        // Never steal keys from an active text field (preset name etc.).
+        if event.window?.firstResponder is NSTextView { return false }
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if key == "z", mods == .command { engine.undoEdit(); return true }
+        if key == "z", mods == [.command, .shift] { engine.redoEdit(); return true }
+        if key == "b", mods == .command, engine.isRunning {
+            engine.setBypassed(!engine.bypassed)
+            return true
+        }
+        switch event.keyCode {
+        case 48:   // Tab / ⇧Tab — cycle band selection
+            guard mods.isDisjoint(with: [.command, .option, .control]) else { return false }
+            cycleSelection(backward: mods.contains(.shift))
+            return true
+        case 123, 124, 125, 126:   // arrows — nudge the selected band
+            guard mods.isDisjoint(with: [.command, .option, .control]),
+                  let i = selectedBand, engine.activeBands.indices.contains(i)
+            else { return false }
+            nudgeBand(i, keyCode: event.keyCode, fine: mods.contains(.shift))
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func cycleSelection(backward: Bool) {
+        let count = engine.activeBands.count
+        guard count > 0 else { return }
+        if let current = selectedBand {
+            selectedBand = ((current + (backward ? -1 : 1)) + count) % count
+        } else {
+            selectedBand = backward ? count - 1 : 0
+        }
+    }
+
+    /// ↑/↓ = gain ±0.5 dB, ←/→ = frequency ∓1 semitone; ⇧ for fine steps.
+    private func nudgeBand(_ i: Int, keyCode: UInt16, fine: Bool) {
+        var band = engine.activeBands[i]
+        let freqStep = Float(pow(2.0, fine ? 1.0 / 48.0 : 1.0 / 12.0))
+        switch keyCode {
+        case 126 where band.filterType.usesGain:
+            band.gain = min(band.gain + (fine ? 0.1 : 0.5), 24)
+        case 125 where band.filterType.usesGain:
+            band.gain = max(band.gain - (fine ? 0.1 : 0.5), -24)
+        case 124:
+            band.frequency = min(band.frequency * freqStep, 20000)
+        case 123:
+            band.frequency = max(band.frequency / freqStep, 20)
+        default:
+            return
+        }
+        engine.activeBands[i] = band
+        engine.applyAllBands()
     }
 
     // MARK: - Header
@@ -165,10 +306,7 @@ struct EQView: View {
                 Text("Pre").frame(width: 50, alignment: .leading)
                 Toggle("Auto", isOn: Binding(
                     get: { engine.autoPreamp },
-                    set: { newVal in
-                        engine.autoPreamp = newVal
-                        if newVal { engine.computeAutoPreamp() }
-                    }
+                    set: { engine.setAutoPreamp($0) }
                 ))
                 .toggleStyle(.checkbox)
                 .font(.caption)
@@ -216,6 +354,13 @@ struct EQView: View {
     @State private var showingAutoEQPicker = false
     @State private var newPresetName = ""
 
+    /// The current curve no longer matches the selected preset.
+    private var presetEdited: Bool {
+        guard let preset = presetManager.allPresets.first(where: { $0.id == selectedPresetID })
+        else { return false }
+        return engine.bands != preset.bands
+    }
+
     private var isPinnedToCurrentDevice: Bool {
         guard let uid = engine.currentOutputUID else { return false }
         return engine.deviceProfile(forUID: uid) == selectedPresetID
@@ -256,6 +401,13 @@ struct EQView: View {
                 if let preset = presetManager.allPresets.first(where: { $0.id == newID }) {
                     engine.applyPreset(preset)
                 }
+            }
+
+            if presetEdited {
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 6, height: 6)
+                    .helpHint("Curve differs from the selected preset — use Save to keep it")
             }
 
             // Save button
@@ -459,11 +611,12 @@ struct EQView: View {
                 Spacer()
                 Button {
                     engine.addBand()
+                    selectedBand = engine.activeBands.count - 1
                 } label: {
                     Image(systemName: "plus.circle")
                 }
                 .buttonStyle(.borderless)
-                .helpHint("Add band")
+                .helpHint("Add a band in the largest gap of the current curve")
             }
             .padding(.horizontal)
             .padding(.vertical, 4)
@@ -474,7 +627,10 @@ struct EQView: View {
                         BandRow(
                             index: i,
                             band: bandBinding(i),
-                            onChange: { engine.applyBand(at: i) }
+                            isSelected: selectedBand == i,
+                            bandwidthOct: $bandwidthOct,
+                            onChange: { engine.applyBand(at: i) },
+                            onSelect: { selectedBand = i }
                         )
                         .contextMenu {
                             Button("Remove Band", role: .destructive) {
@@ -532,6 +688,14 @@ struct EQView: View {
             .toggleStyle(.checkbox)
             .font(.caption)
             Spacer()
+            Button {
+                NSWorkspace.shared.open(URL(
+                    string: "https://github.com/wabsto1/ParaEQ/blob/main/docs/USER-GUIDE.md")!)
+            } label: {
+                Image(systemName: "questionmark.circle")
+            }
+            .buttonStyle(.borderless)
+            .helpHint("Open the user guide. Keyboard: ⌘Z undo, Tab select band, ↑↓←→ adjust, ⌘B bypass")
             Button("Quit") {
                 engine.stop()
                 NSApplication.shared.terminate(nil)
@@ -547,14 +711,20 @@ struct EQView: View {
 struct BandRow: View {
     let index: Int
     @Binding var band: EQBand
+    var isSelected = false
+    @Binding var bandwidthOct: Bool
     var onChange: () -> Void
+    var onSelect: () -> Void = {}
 
     @State private var isExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Summary row — always visible
-            Button { isExpanded.toggle() } label: {
+            Button {
+                isExpanded.toggle()
+                onSelect()
+            } label: {
                 HStack(spacing: 8) {
                     Toggle("", isOn: $band.enabled)
                         .labelsHidden()
@@ -585,10 +755,14 @@ struct BandRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
 
-                    Text("Q")
+                    Text(bandwidthOct ? "BW" : "Q")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    Text(band.qLabel)
+                        .onTapGesture { bandwidthOct.toggle() }
+                        .helpHint("Click to switch between Q and bandwidth in octaves")
+                    Text(bandwidthOct
+                         ? String(format: "%.2f", Bandwidth.octaves(fromQ: band.q))
+                         : band.qLabel)
                         .monospacedDigit()
                         .font(.caption)
                         .frame(width: 34, alignment: .trailing)
@@ -603,7 +777,8 @@ struct BandRow: View {
             .buttonStyle(.plain)
             .padding(.horizontal)
             .padding(.vertical, 6)
-            .helpHint("Click to \(isExpanded ? "collapse" : "expand") this band's controls; right-click to remove the band")
+            .background(isSelected ? Color.accentColor.opacity(0.10) : Color.clear)
+            .helpHint("Click to \(isExpanded ? "collapse" : "expand") this band's controls; right-click to remove the band. Tab selects, arrows adjust")
 
             // Expanded controls
             if isExpanded {
@@ -655,9 +830,10 @@ struct BandRow: View {
                     // Q (hidden for fixed-Q crossover types)
                     if band.filterType.usesQ {
                         HStack {
-                            Text("Q")
+                            Text(bandwidthOct ? "BW" : "Q")
                                 .font(.caption)
                                 .frame(width: 36, alignment: .leading)
+                                .onTapGesture { bandwidthOct.toggle() }
                             Slider(
                                 value: logBinding(
                                     value: $band.q,
@@ -666,7 +842,9 @@ struct BandRow: View {
                                 in: log10(0.1)...log10(30)
                             )
                             .onChange(of: band.q) { _, _ in onChange() }
-                            Text(band.qLabel)
+                            Text(bandwidthOct
+                                 ? Bandwidth.octaveLabel(forQ: band.q)
+                                 : band.qLabel)
                                 .font(.caption).monospacedDigit()
                                 .frame(width: 56, alignment: .trailing)
                         }

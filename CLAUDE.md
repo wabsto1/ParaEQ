@@ -6,7 +6,7 @@ CoreAudio/Accelerate engine — no external dependencies.
 ## Commands
 
 - Build app bundle: `bash build.sh` → `.build/ParaEQ.app` (signed; required for TCC)
-- Tests: `swift test` (37 DSP/parser tests, no audio hardware needed)
+- Tests: `swift test` (52 DSP/parser/logic tests, no audio hardware needed)
 - Deploy: `ditto .build/ParaEQ.app /Applications/ParaEQ.app` (then relaunch)
 - Live diagnostics: `~/Library/Logs/ParaEQ.log` (status line every 10 s while running)
 

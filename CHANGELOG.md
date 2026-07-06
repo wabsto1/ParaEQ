@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.1.0 — 2026-07-05
+
+Workflow and visualization release (inspired by a feature review against
+[iQualize](https://github.com/dariuscorvus/iqualize)).
+
+### Added
+- **Real-time spectrum analyzer**: pre-EQ (cyan) and post-EQ (orange)
+  spectra rendered live behind the response curve. 2048-point Hann-windowed
+  FFT of a lock-free ring-buffer capture, 30 fps, peak-picked log binning,
+  3 dB/frame release smoothing. Toggle with the waveform button; the
+  preference persists.
+- **Undo/redo** (⌘Z/⇧⌘Z + toolbar buttons) covering bands, both channel
+  sets, and preamp. Slider/drag gestures coalesce into single undo steps.
+- **Keyboard editing**: Tab/⇧Tab cycles band selection (highlighted in list
+  and graph), ↑/↓ nudges gain ±0.5 dB, ←/→ moves frequency by a semitone
+  (⇧ = fine steps), ⌘B toggles bypass.
+- **Graph gain range**: ±6/12/18/24 dB or Auto (fits the current curve).
+- **Q ↔ bandwidth-in-octaves display toggle** (click the Q label).
+- **Smarter add-band**: ＋ now inserts the new band centered in the largest
+  log-frequency gap, Q matched to the gap width.
+- **Edited-preset indicator**: an orange dot marks when the curve has
+  diverged from the selected preset.
+- Four new built-in presets: Loudness, Podcast, Electronic, Rock.
+- **?** button opening the user guide.
+- 15 new unit tests (spectrum calibration, undo history coalescing,
+  bandwidth conversion round-trip, suggested-band placement, auto range).
+
+### Changed
+- Pre-EQ audio is now staged raw and preamp applied as a separate pass
+  (needed for the pre-EQ spectrum; no audible change).
+- Window grew 26 pt taller for the graph toolbar.
+- Preset hotkey (⌘⌃1–9) order shifts where the new built-ins appear.
+
 ## 2.0.0 — 2026-07-05
 
 Complete architecture and feature overhaul.
