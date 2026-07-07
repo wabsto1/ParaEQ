@@ -95,20 +95,38 @@ final class AppMixer {
     /// The exceptions the engine should have right now. Order follows first
     /// adjustment, so it is stable across gain changes (gain-only updates
     /// must not trigger an engine restart).
+    ///
+    /// Two-pass priority: non-neutral (actually adjusted) apps always claim a
+    /// slot first, in `adjustOrder`; grace holdovers (neutral apps still
+    /// inside their teardown window) fill only the slots left over. This
+    /// keeps the cap consistent with `slotsFull` — a fresh adjustment can be
+    /// dropped only when 16 OTHER non-neutral adjustments already exist,
+    /// never preempted by an old app coasting through its grace period.
     func desiredExceptions(apps: [AudioApp], now: Date) -> [AppException] {
+        func exception(for bundleID: String) -> AppException? {
+            guard let s = settings[bundleID],
+                  let app = apps.first(where: { $0.bundleID == bundleID })
+            else { return nil }
+            return AppException(
+                bundleID: bundleID, objectIDs: app.objectIDs,
+                gainLinear: s.linearGain)
+        }
+
         var result: [AppException] = []
         for bundleID in adjustOrder {
             guard result.count < Self.maxExceptions,
-                  let s = settings[bundleID],
-                  let app = apps.first(where: { $0.bundleID == bundleID })
+                  let s = settings[bundleID], !s.isNeutral,
+                  let ex = exception(for: bundleID)
             else { continue }
-            if s.isNeutral {
-                guard let deadline = graceDeadlines[bundleID], now < deadline
-                else { continue }
-            }
-            result.append(AppException(
-                bundleID: bundleID, objectIDs: app.objectIDs,
-                gainLinear: s.linearGain))
+            result.append(ex)
+        }
+        for bundleID in adjustOrder {
+            guard result.count < Self.maxExceptions,
+                  let s = settings[bundleID], s.isNeutral,
+                  let deadline = graceDeadlines[bundleID], now < deadline,
+                  let ex = exception(for: bundleID)
+            else { continue }
+            result.append(ex)
         }
         return result
     }

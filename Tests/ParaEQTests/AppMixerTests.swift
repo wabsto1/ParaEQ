@@ -263,6 +263,28 @@ final class AppMixerPolicyTests: XCTestCase {
         XCTAssertEqual(before, after)
     }
 
+    func testFreshAdjustmentPreemptsGraceHoldoverAtCap() {
+        let m = AppMixer()
+        for i in 0..<15 { m.setGain(-3, for: "app\(i)") }
+        // "old" is adjusted then returned to neutral, becoming a grace
+        // holdover that would otherwise occupy the 16th slot.
+        m.setGain(-3, for: "old")
+        _ = m.desiredExceptions(apps: [app("old")], now: t0)
+        m.setGain(0, for: "old")
+        // Fresh 16th adjustment, last in adjustOrder.
+        m.setGain(-3, for: "fresh")
+
+        var apps = (0..<15).map { app("app\($0)") }
+        apps.append(app("old"))
+        apps.append(app("fresh"))
+
+        let ex = m.desiredExceptions(apps: apps, now: t0.addingTimeInterval(5))
+        let ids = Set(ex.map(\.bundleID))
+        XCTAssertTrue(ids.contains("fresh"))
+        XCTAssertFalse(ids.contains("old"))
+        XCTAssertEqual(ex.count, AppMixer.maxExceptions)
+    }
+
     func testSettingCodableRoundTrip() throws {
         let s = AppMixerSetting(gainDB: -7.5, muted: true)
         let data = try JSONEncoder().encode(["com.x.y": s])
