@@ -310,3 +310,63 @@ final class AppMixerPolicyTests: XCTestCase {
         XCTAssertEqual(back["com.x.y"], s)
     }
 }
+
+// MARK: - AppAudioDirectory grouping
+
+final class AppDirectoryGroupingTests: XCTestCase {
+
+    private typealias Snap = AppAudioDirectory.ProcessSnapshot
+
+    /// Resolver mapping helper pids 100.. to app "parent"; others self-named.
+    private func resolve(_ pid: pid_t, _ bundleID: String) -> (String, String)? {
+        if pid >= 100 { return ("com.parent.app", "Parent") }
+        if bundleID.isEmpty { return nil }
+        return (bundleID, String(bundleID.split(separator: ".").last!))
+    }
+
+    func testGroupsHelpersUnderResponsibleApp() {
+        let snaps = [
+            Snap(objectID: 1, pid: 100, bundleID: "com.parent.helper.renderer",
+                 isRunningOutput: true),
+            Snap(objectID: 2, pid: 101, bundleID: "com.parent.helper.gpu",
+                 isRunningOutput: false),
+            Snap(objectID: 3, pid: 7, bundleID: "com.solo.app", isRunningOutput: false),
+        ]
+        let apps = AppAudioDirectory.group(snaps, resolve: resolve)
+        XCTAssertEqual(apps.count, 2)
+        let parent = apps.first { $0.bundleID == "com.parent.app" }!
+        XCTAssertEqual(Set(parent.objectIDs), [1, 2])
+        XCTAssertTrue(parent.isPlaying)          // any member playing → playing
+        let solo = apps.first { $0.bundleID == "com.solo.app" }!
+        XCTAssertEqual(solo.objectIDs, [3])
+        XCTAssertFalse(solo.isPlaying)
+    }
+
+    func testUnresolvableProcessesAreDropped() {
+        let snaps = [Snap(objectID: 9, pid: 5, bundleID: "", isRunningOutput: true)]
+        XCTAssertTrue(AppAudioDirectory.group(snaps, resolve: resolve).isEmpty)
+    }
+
+    func testSortPlayingFirstThenName() {
+        let snaps = [
+            Snap(objectID: 1, pid: 1, bundleID: "com.b.zeta", isRunningOutput: false),
+            Snap(objectID: 2, pid: 2, bundleID: "com.a.alpha", isRunningOutput: false),
+            Snap(objectID: 3, pid: 3, bundleID: "com.c.mid", isRunningOutput: true),
+        ]
+        let apps = AppAudioDirectory.group(snaps, resolve: resolve)
+        XCTAssertEqual(apps.map(\.bundleID),
+                       ["com.c.mid", "com.a.alpha", "com.b.zeta"])
+    }
+
+    func testObjectIDsSortedForStableEquality() {
+        let a = AppAudioDirectory.group(
+            [Snap(objectID: 5, pid: 100, bundleID: "x", isRunningOutput: false),
+             Snap(objectID: 3, pid: 101, bundleID: "y", isRunningOutput: false)],
+            resolve: resolve)
+        let b = AppAudioDirectory.group(
+            [Snap(objectID: 3, pid: 101, bundleID: "y", isRunningOutput: false),
+             Snap(objectID: 5, pid: 100, bundleID: "x", isRunningOutput: false)],
+            resolve: resolve)
+        XCTAssertEqual(a, b)   // order of discovery must not change identity
+    }
+}
