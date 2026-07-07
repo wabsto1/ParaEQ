@@ -114,4 +114,22 @@ final class InputStagingTests: XCTestCase {
         XCTAssertEqual(r.l, [6, 1])
         XCTAssertEqual(r.r, [6, 1])
     }
+
+    func testPairsBeyondSlot16AreIgnored() {
+        // Global interleaved pair + 17 exception interleaved pairs.
+        // The bounds guard (pair - 1 < 16) should skip the 17th pair.
+        var buffers: [(channels: Int, samples: [Float])] = []
+        buffers.append((2, [10, 10, 10, 10]))  // global
+        for _ in 0..<16 {
+            buffers.append((2, [1, 1, 1, 1]))  // exceptions 0–15, each gain 1.0
+        }
+        buffers.append((2, [99, 99, 99, 99]))  // exception 16 (should be skipped)
+
+        let r = runStage(buffers, gains: [Float](repeating: 1.0, count: 16))
+        XCTAssertEqual(r.frames, 2)
+        // Result: global [10,10] + first 16 exceptions each [1,1] = [26,26].
+        // Exception 17 with [99,99] is not mixed due to bounds guard.
+        XCTAssertEqual(r.l, [26, 26])
+        XCTAssertEqual(r.r, [26, 26])
+    }
 }
