@@ -132,3 +132,77 @@ into a lock-free ring consumed by the main IOProc (more code, still viable).
   mechanism already isolates the stream).
 - Solo; per-app output-device routing; "switch preset on frontmost app"
   super-preset (reuses `AppAudioDirectory`).
+
+## Spike findings (2026-07-07)
+
+Ran `Prototypes/MultiTapSpike/main.swift` per the task-1 brief. ParaEQ was not
+running (verified with `pgrep -x ParaEQ` beforehand, so no teardown needed).
+Two runs: first against a normal `while true; do afplay Submarine.aiff; done`
+loop (rejected — see surprises below), then against a single long-lived
+`afplay -r 0.04 Submarine.aiff` process (~30 s) so the tapped PID stayed
+alive for the whole 20 s measurement window. Both builds compiled clean
+(one pre-existing warning at the `uidCF` cast, present in the brief's own
+code, harmless). Both runs: `AudioHardwareCreateProcessTap` and
+`AudioHardwareCreateAggregateDevice` succeeded with no error, IOProc ran
+(`callbacks=1959`–`1962` over 20 s, i.e. ~98 Hz / ~512-frame blocks at 48 kHz
+— healthy and not stalled), and cleanup completed without error.
+
+1. **Buffer layout / order**: input ABL had exactly 2 `AudioBuffer`s, both
+   `ch=2 bytes=4096` (1024 float32 samples = 512 interleaved stereo frames).
+   That is one interleaved-stereo buffer per tap — consistent in *count and
+   shape* with "global tap first, app tap second" per
+   `kAudioAggregateDeviceTapListKey` order. However, **this could not be
+   confirmed by content**, only by shape: neither buffer carried any nonzero
+   samples in either run (see finding 3), so there was no signal to use to
+   verify buffer[1] was actually the afplay stream. Buffer *count* matches
+   the plan's assumption (global first, then one stereo pair per exception
+   tap); buffer *identity* is unverified.
+2. **Frame counts**: identical across both taps' buffers in every callback —
+   both buffers were always `n=1024` (512 frames), never mismatched, across
+   ~1960 callbacks in each run.
+3. **`.mutedWhenTapped` silencing afplay at the speaker**: **could not be
+   verified**. Both input buffers were pure zeros for the entire 20 s in
+   both runs (peak RMS `0.0000` on all logged slots; added temporary debug
+   logging of raw samples every 500 callbacks — `maxAbs=0.0`, `first4=[0.0,
+   0.0, 0.0, 0.0]` throughout). Since capture was silent, there was no
+   afplay audio in the tap to reroute to the output, so the audible
+   before/after check the brief describes could not be exercised either way.
+4. **Errors/oddities**: no `check()` failures, no tap-creation error, no
+   format-mismatch — everything that returns an `OSStatus` returned `noErr`.
+   The failure mode is a **silent zero-signal capture with a fully healthy
+   IOProc**, not a crash or explicit error. Suspected root cause: the
+   process invoking the spike binary is a subprocess of the `claude` CLI
+   (headless, `ps` shows parent chain `zsh → claude --dangerously-skip-permissions`),
+   not a GUI terminal app (Terminal.app/iTerm2) that macOS TCC recognizes as
+   a "responsible process" capable of receiving/completing a System Audio
+   Recording consent prompt. `log show --predicate 'process == "coreaudiod"'`
+   and TCC-subsystem log queries over the run window show **zero** matching
+   entries — no prompt was even generated, consistent with the request being
+   silently dropped rather than denied-with-a-dialog. The TCC database itself
+   couldn't be queried directly (`TCC.db` open returns "authorization
+   denied" even for the owning user, as expected by SIP). A second, separate
+   surprise: the brief's literal `while true; do afplay ...; done` loop
+   respawns a new `afplay` process (new PID) roughly every 1.5 s because
+   `Submarine.aiff` is only ~1.49 s long (`afinfo`), while spike setup
+   (tap/aggregate/IOProc creation) happens once against the PID pgrep found
+   at start — that PID's process can exit before or shortly after the 20 s
+   capture begins. Worked around this by playing a single slowed-down
+   instance (`afplay -r 0.04 Submarine.aiff`, ~30 s runtime) so one stable
+   PID lived through the whole window; this did not change the zero-signal
+   result, so the TCC explanation above is a better fit than the respawn
+   timing issue (which was real but not the actual blocker here).
+
+**Verdict**: Findings (1) and (2) are consistent with the plan's buffer-order
+assumption (global pair first, then one stereo pair per exception tap) but
+**unconfirmed by content** because no audio ever reached either tap.
+Finding (3), the per-process mute claim, is **unverified** for the same
+reason. This is a BLOCKED outcome per the task instructions — not a
+redesign signal (buffer layout didn't contradict the tap-list-order
+assumption), but the spike did not produce usable evidence for either load-
+bearing claim (a) or (b). Root cause is almost certainly the System Audio
+Recording TCC grant not being obtainable by/attributed to this headless
+CLI process tree. Re-running the same binary from a normal Terminal.app or
+iTerm2 session (so TCC can prompt and attribute the grant to a recognized
+GUI app, then approving System Audio Recording in System Settings →
+Privacy & Security) should be the next step before treating this spike as
+complete.
