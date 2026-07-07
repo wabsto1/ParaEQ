@@ -757,6 +757,14 @@ struct EQView: View {
             Spacer()
             Button {
                 NSWorkspace.shared.open(URL(
+                    string: "https://github.com/sponsors/wabsto1")!)
+            } label: {
+                Image(systemName: "heart")
+            }
+            .buttonStyle(.borderless)
+            .helpHint("ParaEQ is free — sponsor development if it's useful to you")
+            Button {
+                NSWorkspace.shared.open(URL(
                     string: "https://github.com/wabsto1/ParaEQ/blob/main/docs/USER-GUIDE.md")!)
             } label: {
                 Image(systemName: "questionmark.circle")

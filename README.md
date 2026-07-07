@@ -88,6 +88,12 @@ swift test   # 88 DSP/parser/logic tests: coefficients, slopes, limiter, FIR des
 
 **[User Guide](docs/USER-GUIDE.md)** (installation, permissions, every feature) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
 
+## Support
+
+ParaEQ is free and open source, and will stay that way. If it improves your
+listening, you can [sponsor development](https://github.com/sponsors/wabsto1) —
+entirely optional, always appreciated.
+
 ## License
 
 MIT
