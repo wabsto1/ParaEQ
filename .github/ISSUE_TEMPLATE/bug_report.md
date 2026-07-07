@@ -16,6 +16,7 @@ labels: bug
 **Environment**
 - macOS version:
 - Output device (built-in / USB / Bluetooth):
+- Other system-audio tools installed (eqMac, BlackHole, Loopback, etc.):
 - ParaEQ commit or release:
 
 **Diagnostics**

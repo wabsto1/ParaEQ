@@ -24,6 +24,8 @@
   this within 5 s and restarts itself once.
 - **Editable balance readout**: type `0`/`C` for exact center or `L20`/`R20`
   to set balance numerically (landing on exact center by slider was hard).
+- **Sponsor link** in the footer and README (ParaEQ stays free and open
+  source; sponsorship is optional).
 
 ### Fixed
 - **Panel render performance**: the spectrum/meter updates (30 fps)

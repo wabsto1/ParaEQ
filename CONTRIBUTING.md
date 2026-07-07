@@ -50,4 +50,11 @@ then `scripts/release.sh "Developer ID Application: Your Name (TEAMID)"`.
 - Every DSP change needs a test in `Tests/ParaEQTests`. The suite runs offline;
   filter behavior is asserted on synthesized signals.
 - Verify live after engine changes: run the app, play audio, and check
-  `~/Library/Logs/ParaEQ.log` shows non-zero peaks and no restart loops.
+  `~/Library/Logs/ParaEQ.log` shows the status line's `callbacks=` counter
+  increasing and non-zero peaks. `callbacks=0` means the IOProc never fired —
+  usually the stalled-aggregate state from rapid quit/relaunch cycles
+  (gotcha 8), not your change. Pause ~45 s between deploy cycles; if it
+  persists, reboot to reset the process-tap subsystem.
+- Do not read 30 fps engine properties (peaks, spectrum, mic level) in a
+  parent view body — they belong in leaf views, and no blocking calls (XPC,
+  HAL enumeration) go in any `body` (gotcha 9).
