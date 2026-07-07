@@ -94,14 +94,20 @@ final class AppMixer {
 
     /// The exceptions the engine should have right now. Order follows first
     /// adjustment, so it is stable across gain changes (gain-only updates
-    /// must not trigger an engine restart).
+    /// must not trigger an engine restart) — and stable across a non-neutral
+    /// app transitioning into (or out of) its grace period, as long as
+    /// membership in the returned set doesn't change; only actual
+    /// membership changes (add/drop) may reorder the list.
     ///
-    /// Two-pass priority: non-neutral (actually adjusted) apps always claim a
-    /// slot first, in `adjustOrder`; grace holdovers (neutral apps still
-    /// inside their teardown window) fill only the slots left over. This
-    /// keeps the cap consistent with `slotsFull` — a fresh adjustment can be
-    /// dropped only when 16 OTHER non-neutral adjustments already exist,
-    /// never preempted by an old app coasting through its grace period.
+    /// Two-pass priority, membership only: non-neutral (actually adjusted)
+    /// apps always claim a slot first, in `adjustOrder`; grace holdovers
+    /// (neutral apps still inside their teardown window) fill only the
+    /// slots left over. This keeps the cap consistent with `slotsFull` — a
+    /// fresh adjustment can be dropped only when 16 OTHER non-neutral
+    /// adjustments already exist, never preempted by an old app coasting
+    /// through its grace period. Once membership is decided, the returned
+    /// array is built with a single walk over `adjustOrder`, so relative
+    /// order is preserved for every app whose membership didn't change.
     func desiredExceptions(apps: [AudioApp], now: Date) -> [AppException] {
         func exception(for bundleID: String) -> AppException? {
             guard let s = settings[bundleID],
@@ -112,19 +118,24 @@ final class AppMixer {
                 gainLinear: s.linearGain)
         }
 
-        var result: [AppException] = []
+        var members: Set<String> = []
         for bundleID in adjustOrder {
-            guard result.count < Self.maxExceptions,
-                  let s = settings[bundleID], !s.isNeutral,
-                  let ex = exception(for: bundleID)
+            guard members.count < Self.maxExceptions,
+                  let s = settings[bundleID], !s.isNeutral
             else { continue }
-            result.append(ex)
+            members.insert(bundleID)
         }
         for bundleID in adjustOrder {
-            guard result.count < Self.maxExceptions,
+            guard members.count < Self.maxExceptions,
                   let s = settings[bundleID], s.isNeutral,
-                  let deadline = graceDeadlines[bundleID], now < deadline,
-                  let ex = exception(for: bundleID)
+                  let deadline = graceDeadlines[bundleID], now < deadline
+            else { continue }
+            members.insert(bundleID)
+        }
+
+        var result: [AppException] = []
+        for bundleID in adjustOrder {
+            guard members.contains(bundleID), let ex = exception(for: bundleID)
             else { continue }
             result.append(ex)
         }

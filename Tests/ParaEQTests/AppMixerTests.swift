@@ -285,6 +285,24 @@ final class AppMixerPolicyTests: XCTestCase {
         XCTAssertEqual(ex.count, AppMixer.maxExceptions)
     }
 
+    func testNeutralTransitionUnderCapKeepsOrder() {
+        // a, b, c adjusted non-neutral in that order, well under the cap.
+        let m = AppMixer()
+        m.setGain(-3, for: "a")
+        m.setGain(-3, for: "b")
+        m.setGain(-3, for: "c")
+        let apps = [app("a"), app("b"), app("c")]
+        let before = m.desiredExceptions(apps: apps, now: t0).map(\.bundleID)
+        XCTAssertEqual(before, ["a", "b", "c"])
+
+        // "a" returns to neutral (enters grace) while b, c remain adjusted.
+        m.setGain(0, for: "a")
+        let during = m.desiredExceptions(apps: apps, now: t0.addingTimeInterval(5))
+        // Membership is unchanged (a is still present via grace holdover);
+        // order must remain first-adjustment order, not move "a" to the tail.
+        XCTAssertEqual(during.map(\.bundleID), ["a", "b", "c"])
+    }
+
     func testSettingCodableRoundTrip() throws {
         let s = AppMixerSetting(gainDB: -7.5, muted: true)
         let data = try JSONEncoder().encode(["com.x.y": s])
