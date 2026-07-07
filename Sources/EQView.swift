@@ -32,7 +32,7 @@ struct EQView: View {
             Divider()
             deviceSection
             if engine.isRunning {
-                LevelMeterView(peakL: engine.peakL, peakR: engine.peakR)
+                LevelMeterView(engine: engine)
                     .padding(.horizontal)
                     .padding(.bottom, 6)
             }
@@ -53,8 +53,7 @@ struct EQView: View {
                 ),
                 selectedBand: $selectedBand,
                 dbSpan: effectiveGraphSpan,
-                spectrumPre: engine.spectrumPre,
-                spectrumPost: engine.spectrumPost,
+                engine: engine,
                 flexibleHeight: inWindow
             ) {
                 engine.applyAllBands()
@@ -74,6 +73,8 @@ struct EQView: View {
             }
             registerHotkeys()
             installKeyMonitor()
+            outputDevices = AudioDeviceManager.outputDevices()
+            startAtLogin = SMAppService.mainApp.status == .enabled
         }
         .onDisappear {
             removeKeyMonitor()
@@ -84,14 +85,40 @@ struct EQView: View {
         .onChange(of: engine.activeBands.count) { _, _ in
             selectedBand = nil
         }
+        .onChange(of: engine.activeBands, initial: true) { _, newBands in
+            peakAbsDB = FrequencyResponse.peakAbsGainDB(for: newBands)
+        }
+        .onChange(of: engine.deviceListGeneration) { _, _ in
+            outputDevices = AudioDeviceManager.outputDevices()
+        }
+        .onChange(of: engine.balance, initial: true) { _, b in
+            balanceText = BalanceEntry.label(for: b)
+        }
     }
 
     // MARK: - Graph controls (undo/redo, spectrum toggle, gain range)
 
+    /// Peak |dB| of the current curve, recomputed only on band edits (not on
+    /// every 30 fps meter tick — the auto range runs a 200-point curve).
+    @State private var peakAbsDB: Double = 0
+    /// Cached HAL device list; enumerating in body would run per meter tick.
+    @State private var outputDevices: [AudioDevice] = []
+    /// Cached SMAppService status; querying it is a blocking XPC call and the
+    /// toggle's binding getter runs on every body evaluation.
+    @State private var startAtLogin = false
+    /// Editable balance readout ("C", "L20", "R7"); committed on Return.
+    @State private var balanceText = "C"
+
+    private func commitBalanceText() {
+        if let v = BalanceEntry.parse(balanceText) {
+            engine.setBalance(v)
+        }
+        balanceText = BalanceEntry.label(for: engine.balance)
+    }
+
     private var effectiveGraphSpan: Double {
         graphSpanSetting == 0
-            ? GraphRange.auto(forPeakAbsDB:
-                FrequencyResponse.peakAbsGainDB(for: engine.activeBands))
+            ? GraphRange.auto(forPeakAbsDB: peakAbsDB)
             : graphSpanSetting
     }
 
@@ -259,7 +286,7 @@ struct EQView: View {
                 Text("Output").frame(width: 50, alignment: .leading)
                 Picker("", selection: $engine.selectedOutput) {
                     Text("System Default").tag(AudioDevice?.none)
-                    ForEach(AudioDeviceManager.outputDevices()) { d in
+                    ForEach(outputDevices) { d in
                         Text(d.name).tag(AudioDevice?.some(d))
                     }
                 }
@@ -285,12 +312,23 @@ struct EQView: View {
                     get: { engine.balance },
                     set: { engine.setBalance(Float($0)) }
                 ), in: -1...1)
-                Text(engine.balance == 0 ? "C"
-                     : String(format: "%@%.0f%%", engine.balance < 0 ? "L" : "R",
-                              abs(engine.balance) * 100))
-                    .frame(width: 36, alignment: .trailing)
+                TextField("C", text: $balanceText)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 36)
                     .monospacedDigit()
                     .font(.caption)
+                    .onSubmit(commitBalanceText)
+                    .helpHint("Type 0 or C for center, L20/R20 to bias a side, then press Return")
+                Button {
+                    openWindow(id: "balance-calibration")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "ear.badge.waveform")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!engine.isRunning)
+                .helpHint("Calibrate L/R balance with the Mac's microphone (hold each earcup to the mic)")
             }
             HStack {
                 Text("FIR").frame(width: 50, alignment: .leading)
@@ -707,10 +745,11 @@ struct EQView: View {
             }
             .helpHint("Reset all bands to a flat 10-band layout")
             Toggle("Start at Login", isOn: Binding(
-                get: { SMAppService.mainApp.status == .enabled },
+                get: { startAtLogin },
                 set: { on in
                     if on { try? SMAppService.mainApp.register() }
                     else { try? SMAppService.mainApp.unregister() }
+                    startAtLogin = SMAppService.mainApp.status == .enabled
                 }
             ))
             .toggleStyle(.checkbox)

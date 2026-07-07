@@ -1,13 +1,14 @@
 import SwiftUI
 
+/// Reads the engine's peak levels in its own body so the 30 fps meter ticks
+/// invalidate only this small view, never the whole panel.
 struct LevelMeterView: View {
-    var peakL: Float
-    var peakR: Float
+    var engine: AudioEngine
 
     var body: some View {
         VStack(spacing: 2) {
-            meterBar(level: CGFloat(peakL))
-            meterBar(level: CGFloat(peakR))
+            meterBar(level: CGFloat(engine.peakL))
+            meterBar(level: CGFloat(engine.peakR))
         }
     }
 

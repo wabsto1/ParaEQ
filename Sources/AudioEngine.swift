@@ -27,6 +27,12 @@ enum EngineLog {
     }
 }
 
+/// Balance-calibration stimulus routing. Raw values are what the IOProc
+/// reads from `measurePtr` (0 = off, 1 = left, 2 = right).
+enum MeasureChannel: Float {
+    case off = 0, left = 1, right = 2
+}
+
 // MARK: - Realtime context (no allocation on the IO thread)
 
 /// Shared with the aggregate-device IOProc. The IOProc stages tap input as
@@ -50,6 +56,9 @@ private final class IOCtx {
     let bypassPtr: UnsafeMutablePointer<Float>
     let peakLPtr: UnsafeMutablePointer<Float>
     let peakRPtr: UnsafeMutablePointer<Float>
+    /// Balance calibration: 0 = off, 1 = stimulus to L, 2 = to R.
+    let measurePtr: UnsafeMutablePointer<Float>
+    let tone: MultiTone
     var callbackCount: UInt64 = 0
 
     init(eq: BiquadEQ, limiter: Limiter, crossfeed: Crossfeed?,
@@ -57,7 +66,8 @@ private final class IOCtx {
          maxFrames: Int,
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
          balancePtr: UnsafeMutablePointer<Float>, bypassPtr: UnsafeMutablePointer<Float>,
-         peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>) {
+         peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>,
+         measurePtr: UnsafeMutablePointer<Float>) {
         self.eq = eq
         self.limiter = limiter
         self.crossfeed = crossfeed
@@ -71,6 +81,8 @@ private final class IOCtx {
         self.bypassPtr = bypassPtr
         self.peakLPtr = peakLPtr
         self.peakRPtr = peakRPtr
+        self.measurePtr = measurePtr
+        tone = MultiTone(sampleRate: eq.sampleRate)
         stageL = .allocate(capacity: maxFrames)
         stageL.initialize(repeating: 0, count: maxFrames)
         stageR = .allocate(capacity: maxFrames)
@@ -143,6 +155,11 @@ final class AudioEngine {
     var spectrumPost: [Float] = []
     var canUndo = false
     var canRedo = false
+    /// Bumped whenever the HAL reports a device-list/default-output change;
+    /// lets the UI cache the device list instead of enumerating per frame.
+    var deviceListGeneration = 0
+    /// Which channel the calibration stimulus is playing on (.off = normal).
+    private(set) var measureChannel: MeasureChannel = .off
     @ObservationIgnored private var spectrumTap: SpectrumTap?
     @ObservationIgnored private let spectrumFreqs =
         FrequencyResponse.logFrequencies(count: 120)
@@ -161,6 +178,7 @@ final class AudioEngine {
     private var preampLinearPtr: UnsafeMutablePointer<Float>?
     private var peakLPtr: UnsafeMutablePointer<Float>?
     private var peakRPtr: UnsafeMutablePointer<Float>?
+    private var measurePtr: UnsafeMutablePointer<Float>?
     private var ioCtx: Unmanaged<IOCtx>?
     private var meterTimer: Timer?
     private var meterTicks = 0
@@ -222,6 +240,8 @@ final class AudioEngine {
             peakLPtr!.initialize(to: 0)
             peakRPtr = .allocate(capacity: 1)
             peakRPtr!.initialize(to: 0)
+            measurePtr = .allocate(capacity: 1)
+            measurePtr!.initialize(to: 0)
             preampLinearPtr = .allocate(capacity: 1)
             if autoPreamp { computeAutoPreamp() }
             preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
@@ -248,10 +268,37 @@ final class AudioEngine {
             startMeterTimer()
             EngineLog.log(String(format: "Running: tap #%u agg #%u, %.0f Hz",
                                  tapID, aggregateID, tapFormat.mSampleRate))
+            scheduleStartWatchdog()
         } catch {
             teardown()
             errorMessage = error.localizedDescription
             EngineLog.log("Start failed: \(error.localizedDescription)")
+        }
+    }
+
+    // Rapid stop/start cycles (relaunch over a live instance) can leave a
+    // freshly created aggregate that never delivers IO callbacks — observed
+    // 2026-07-07: "Running" logged, callbacks=0 forever, total silence. One
+    // guarded restart recovers it; a generation counter voids stale checks.
+    private var watchdogGeneration = 0
+    private var watchdogRetried = false
+
+    private func scheduleStartWatchdog() {
+        watchdogGeneration += 1
+        let generation = watchdogGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, self.isRunning,
+                  generation == self.watchdogGeneration,
+                  let ctx = self.ioCtx?.takeUnretainedValue(),
+                  ctx.callbackCount == 0 else { return }
+            guard !self.watchdogRetried else {
+                EngineLog.log("watchdog: still no IO callbacks after restart — giving up")
+                self.errorMessage = "Audio engine stalled — try Stop/Start"
+                return
+            }
+            self.watchdogRetried = true
+            EngineLog.log("watchdog: no IO callbacks 5 s after start — restarting engine")
+            self.restart()
         }
     }
 
@@ -370,7 +417,8 @@ final class AudioEngine {
                         maxFrames: 4096,
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
                         balancePtr: balancePtr!, bypassPtr: bypassPtr!,
-                        peakLPtr: peakLPtr!, peakRPtr: peakRPtr!)
+                        peakLPtr: peakLPtr!, peakRPtr: peakRPtr!,
+                        measurePtr: measurePtr!)
         let um = Unmanaged.passRetained(ctx)
         ioCtx = um
 
@@ -451,6 +499,19 @@ final class AudioEngine {
                     c.outR[f] *= gR
                 }
             }
+            // Balance calibration: replace program audio with the multitone
+            // stimulus on one channel. Injected after balance/volume so
+            // current settings cannot skew the per-ear measurement; the
+            // limiter stays as a safety ceiling.
+            let measure = c.measurePtr.pointee
+            if measure != 0 {
+                let toL = measure == 1
+                for f in 0..<frames {
+                    let s = c.tone.next() * MeasurementSignal.injectionAmplitude
+                    c.outL[f] = toL ? s : 0
+                    c.outR[f] = toL ? 0 : s
+                }
+            }
             c.limiter.process(l: c.outL, r: c.outR, frames: frames)
             c.spectrum?.writePost(l: c.outL, r: c.outR, frames: frames)
             let srcL = c.outL
@@ -523,6 +584,7 @@ final class AudioEngine {
     }
 
     private func evaluateDeviceChange() {
+        deviceListGeneration &+= 1
         guard isRunning else { return }
         if let selected = selectedOutput,
            !AudioDeviceManager.outputDevices().contains(where: { $0.uid == selected.uid }) {
@@ -628,6 +690,13 @@ final class AudioEngine {
         scheduleSave()
     }
 
+    /// Balance-calibration stimulus routing (pink noise replaces program
+    /// audio on one channel while active).
+    func setMeasureChannel(_ channel: MeasureChannel) {
+        measureChannel = channel
+        measurePtr?.pointee = channel.rawValue
+    }
+
     func setBypassed(_ on: Bool) {
         bypassed = on
         bypassPtr?.pointee = on ? 1 : 0
@@ -636,7 +705,10 @@ final class AudioEngine {
     // MARK: - Device auto-profiles (preset per output device)
 
     var currentOutputUID: String? {
-        selectedOutput?.uid ?? AudioDeviceManager.defaultOutputDevice()?.uid
+        // Prefer stored state — defaultOutputDevice() is a HAL query and this
+        // is read from SwiftUI body evaluations (30 fps while meters run).
+        selectedOutput?.uid ?? activeOutputUID
+            ?? AudioDeviceManager.defaultOutputDevice()?.uid
     }
 
     func deviceProfile(forUID uid: String) -> String? {
@@ -870,6 +942,11 @@ final class AudioEngine {
                 self.spectrumPost = post
             }
             self.meterTicks += 1
+            // Callbacks flowing again → future stalls get a fresh watchdog retry.
+            if self.watchdogRetried, let ctx = self.ioCtx?.takeUnretainedValue(),
+               ctx.callbackCount > 0 {
+                self.watchdogRetried = false
+            }
             if self.meterTicks % 300 == 0, let ctx = self.ioCtx?.takeUnretainedValue() {
                 EngineLog.log(String(format: "status: callbacks=%llu peakL=%.3f peakR=%.3f",
                                      ctx.callbackCount, self.peakL, self.peakR))
@@ -902,6 +979,8 @@ final class AudioEngine {
         if let p = preampLinearPtr { p.deallocate(); preampLinearPtr = nil }
         if let p = peakLPtr { p.deallocate(); peakLPtr = nil }
         if let p = peakRPtr { p.deallocate(); peakRPtr = nil }
+        if let p = measurePtr { p.deallocate(); measurePtr = nil }
+        measureChannel = .off
     }
 
     private func check(_ status: OSStatus) throws {

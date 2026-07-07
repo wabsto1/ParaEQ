@@ -20,5 +20,7 @@
     <true/>
     <key>NSAudioCaptureUsageDescription</key>
     <string>ParaEQ captures system audio in order to apply equalizer processing before playing it to your output device.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ParaEQ listens with the microphone only during headphone balance calibration that you start, to compare the loudness of your left and right earcups.</string>
 </dict>
 </plist>

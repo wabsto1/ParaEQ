@@ -190,3 +190,43 @@ final class SpectrumTapTests: XCTestCase {
         XCTAssertEqual(decayed[nearest], loud[nearest] - 3.0, accuracy: 0.01)
     }
 }
+
+final class BalanceEntryTests: XCTestCase {
+
+    func testCenterInputs() {
+        for s in ["0", "C", "c", " 0 ", "L0", "R0", "0%"] {
+            XCTAssertEqual(BalanceEntry.parse(s), 0, "input: \(s)")
+        }
+    }
+
+    func testSidedInputs() {
+        XCTAssertEqual(BalanceEntry.parse("L20")!, -0.20, accuracy: 1e-6)
+        XCTAssertEqual(BalanceEntry.parse("r15")!, 0.15, accuracy: 1e-6)
+        XCTAssertEqual(BalanceEntry.parse("-20")!, -0.20, accuracy: 1e-6)
+        XCTAssertEqual(BalanceEntry.parse("35")!, 0.35, accuracy: 1e-6)
+        XCTAssertEqual(BalanceEntry.parse("L2.5")!, -0.025, accuracy: 1e-6)
+    }
+
+    func testClampsToFullScale() {
+        XCTAssertEqual(BalanceEntry.parse("L150"), -1)
+        XCTAssertEqual(BalanceEntry.parse("999"), 1)
+    }
+
+    func testRejectsGarbage() {
+        for s in ["", "  ", "left", "L", "R%", "1a", "--5"] {
+            XCTAssertNil(BalanceEntry.parse(s), "input: \(s)")
+        }
+    }
+
+    func testLabelRoundTrip() {
+        XCTAssertEqual(BalanceEntry.label(for: 0), "C")
+        XCTAssertEqual(BalanceEntry.label(for: -0.2), "L20")
+        XCTAssertEqual(BalanceEntry.label(for: 0.07), "R7")
+        for pct in stride(from: -100, through: 100, by: 7) {
+            let b = Float(pct) / 100
+            XCTAssertEqual(BalanceEntry.parse(BalanceEntry.label(for: b))!,
+                           (abs(b * 100).rounded()) / 100 * (b < 0 ? -1 : 1),
+                           accuracy: 1e-6)
+        }
+    }
+}

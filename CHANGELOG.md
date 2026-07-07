@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Mic-based headphone balance calibration** (ear icon next to the Bal
+  slider, opens its own window): plays an 8-tone test signal (500 Hz–4 kHz)
+  per channel while each earcup is held against the Mac's microphone and
+  compares the ears by Goertzel detection at the exact tone frequencies
+  with ambient power subtraction — broadband room/fan noise barely
+  registers (validated: level recovered within 0.5 dB under noise 10 dB
+  louder than the stimulus). Differential design cancels the uncalibrated
+  mic from the L/R comparison; one click applies the compensating balance.
+  Accuracy machinery: a live seal gate (Measure arms only once the tone
+  level is stable, standardizing coupling per take), three re-seated trials
+  per ear interleaved L,R,L,R,L,R (slow drift cancels between sides), all
+  microphone-array channels averaged (spatial robustness), per-tone medians
+  across 0.5 s blocks and across trials, and the final delta as the median
+  of per-tone L−R differences (a seating-killed tone can't skew it).
+  Seating-to-seating spread is reported; big deltas suggest the cable-swap
+  diagnostic. Includes ambient SNR gate per trial.
+- **Engine start watchdog**: rapid relaunches could produce an aggregate
+  that never delivers IO callbacks (silent output); the engine now detects
+  this within 5 s and restarts itself once.
+- **Editable balance readout**: type `0`/`C` for exact center or `L20`/`R20`
+  to set balance numerically (landing on exact center by slider was hard).
+
+### Fixed
+- **Panel render performance**: the spectrum/meter updates (30 fps)
+  invalidated the entire panel every tick — SwiftUI re-diffed all band rows
+  and AppKit re-ran full window layout, plus a blocking launchd XPC call
+  (Start-at-Login status) and a CoreAudio device enumeration ran per frame
+  in view bodies. Level/spectrum reads now live in leaf views only, the
+  device list and login-item status are cached and event-refreshed, and the
+  graph is layered so curve math redraws only on band edits. Panel-open CPU
+  dropped from ~47% to ~6%; the intermittent worsening over time (slow XPC
+  round-trips) is gone.
+
 ## 2.1.0 — 2026-07-05
 
 Workflow and visualization release (inspired by a feature review against

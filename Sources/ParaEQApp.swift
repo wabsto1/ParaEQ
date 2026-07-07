@@ -21,5 +21,13 @@ struct ParaEQApp: App {
             EQView(engine: engine, inWindow: true)
         }
         .defaultSize(width: 520, height: 880)
+
+        // Balance calibration lives in its own window (not a panel sheet):
+        // MenuBarExtra panels dismiss on interaction, and the user's hands
+        // are holding headphones during the measurement anyway.
+        Window("Balance Calibration", id: "balance-calibration") {
+            BalanceWizardView(engine: engine)
+        }
+        .windowResizability(.contentSize)
     }
 }

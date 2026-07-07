@@ -62,3 +62,31 @@ enum GraphRange {
         return choices.last!
     }
 }
+
+// MARK: - Balance text entry
+//
+// The balance slider is hard to land exactly on center, so the readout is an
+// editable field. Accepts "0"/"C" (center), "L20"/"R20", bare "20" (right) or
+// "-20" (left); percent signs are tolerated. Values are whole percent.
+
+enum BalanceEntry {
+    /// Parses user text into a balance in -1...1; nil = unparseable.
+    static func parse(_ text: String) -> Float? {
+        var t = text.trimmingCharacters(in: .whitespaces).uppercased()
+            .replacingOccurrences(of: "%", with: "")
+        if t.isEmpty { return nil }
+        if t == "C" { return 0 }
+        var sign: Float = 1
+        if t.hasPrefix("L") { sign = -1; t.removeFirst() }
+        else if t.hasPrefix("R") { t.removeFirst() }
+        guard let v = Float(t) else { return nil }
+        return min(max(sign * v / 100, -1), 1)
+    }
+
+    /// Formats a balance for the field: "C", "L20", "R7".
+    static func label(for balance: Float) -> String {
+        let pct = Int((abs(balance) * 100).rounded())
+        if pct == 0 { return "C" }
+        return (balance < 0 ? "L" : "R") + String(pct)
+    }
+}

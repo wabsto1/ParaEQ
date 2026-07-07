@@ -19,7 +19,8 @@ Built with SwiftUI and pure CoreAudio/Accelerate — no external dependencies.
 - **GraphicEQ mode**: variable-node curves rendered as 16384-tap minimum-phase FIR filters (cepstral method, near-zero latency)
 - **Convolution**: load impulse-response files (wav/aiff/…, auto-resampled) through a partitioned FFT convolver
 - **Headphone crossfeed** (Chu Moy / Jan Meier style)
-- **Stereo balance**, master volume, auto- or manual **preamp** (anti-clipping)
+- **Stereo balance** (slider or typed — `0`/`C`, `L20`, `R15`), master volume, auto- or manual **preamp** (anti-clipping)
+- **Mic-based balance calibration**: a guided wizard plays a multitone test signal per channel while you hold each earcup to the Mac's microphone, detects it per-frequency (robust to fan/room noise), and applies the true L/R correction — catches worn cables, dirty plug contacts, and mismatched drivers
 - **Lookahead limiter** (5 ms lookahead, instant attack, smooth release) instead of a clipper
 
 **Interface**
@@ -73,7 +74,8 @@ System audio → global process tap (.mutedWhenTapped, own PID excluded)
              → single IOProc:
                  [Mid/Side encode] → vDSP biquad cascades (per-channel coefficients)
                  → [minimum-phase FIR / convolution] → [crossfeed]
-                 → balance + volume → lookahead limiter → output buffers
+                 → balance + volume → [calibration stimulus] → lookahead limiter
+                 → output buffers
 ```
 
 Filter math is RBJ Audio-EQ-Cookbook biquads run through `vDSP_biquadm` with per-sample coefficient ramping (glitch-free live edits). The response graph evaluates the same coefficients at the engine's actual sample rate.
@@ -81,7 +83,7 @@ Filter math is RBJ Audio-EQ-Cookbook biquads run through `vDSP_biquadm` with per
 ## Testing
 
 ```bash
-swift test   # 52 DSP/parser/logic tests: coefficients, slopes, limiter, FIR design, convolver, round-trips, spectrum calibration, undo history
+swift test   # 88 DSP/parser/logic tests: coefficients, slopes, limiter, FIR design, convolver, round-trips, spectrum calibration, undo history, calibration signal/detection/statistics
 ```
 
 **[User Guide](docs/USER-GUIDE.md)** (installation, permissions, every feature) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)

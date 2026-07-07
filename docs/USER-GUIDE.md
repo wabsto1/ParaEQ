@@ -57,7 +57,27 @@ Top to bottom:
   macOS routes audio to (recommended); picking a specific device locks output
   there. Unplugging a device or changing the system default is handled
   automatically.
-- **Vol / Bal** — master volume and stereo balance.
+- **Vol / Bal** — master volume and stereo balance. The balance readout is
+  editable: click it, type `0` (or `C`) for exact center, `L20`/`R20` (or
+  `-20`/`20`) for a percentage bias, and press Return.
+- **Balance calibration** (ear icon next to Bal, needs the engine running) —
+  measures your headphones' L/R level match with the Mac's microphone, in
+  its own window. It plays an 8-tone test signal (500 Hz–4 kHz) on one
+  channel while you hold that earcup sealed against the mic and compares
+  the ears only at those exact frequencies — so fans, HVAC, and general
+  room noise barely affect it. The tone plays while you position the cup
+  and the **Measure button arms only once the level is stable** (the
+  status line under the meter guides you). Each ear is measured **three
+  times**, alternating L/R with a prompt to lift and re-seat the cup
+  between takes; robust averaging (medians over blocks, trials, and
+  per-frequency differences) cancels placement luck, and the reported
+  seating-to-seating spread tells you how trustworthy the result is
+  (above ~±0.5 dB, redo that side). Best technique: laptop flat, cup
+  resting under its own weight.
+  Because both ears are measured by the same mic, mic calibration doesn't
+  matter: level differences from a worn cable, dirty plug contact, or
+  mismatched drivers show up directly, and one click applies the
+  compensating balance. First use asks for microphone permission.
 - **FIR** — shows the active GraphicEQ curve or loaded impulse response
   (see below); **Load IR…** loads a convolution file.
 - **XFeed** — headphone crossfeed: Off, Chu Moy, or Jan Meier flavor.

@@ -19,6 +19,9 @@ System audio (all apps except ParaEQ)
                                            partitioned FFT convolver)
          crossfeed                        (low-passed opposite-channel bleed)
       3. balance + volume
+         [balance calibration: replace with multitone stimulus on one
+          channel — after balance/volume so settings can't skew the
+          per-ear measurement]
       4. lookahead limiter                (5 ms, linked stereo)
          → post-EQ spectrum ring write
       5. copy to device output buffers, track peaks
@@ -41,9 +44,13 @@ default device is never modified. A crash cannot leave the machine silent.
 | `Sources/FrequencyResponse.swift` | Graph/auto-preamp math (same coefficients as audio) |
 | `Sources/Spectrum.swift` | Lock-free spectrum capture rings + Hann/FFT analysis (`SpectrumTap`) |
 | `Sources/EditHistory.swift` | Generic undo/redo stack with gesture coalescing |
-| `Sources/BandUtils.swift` | Q↔octave conversion, suggested-band placement, graph auto-range |
+| `Sources/BandUtils.swift` | Q↔octave conversion, suggested-band placement, graph auto-range, balance text entry (`BalanceEntry`) |
 | `Sources/AutoEQParser.swift` | Equalizer APO Parametric/GraphicEQ import + export |
 | `Sources/HotkeyManager.swift` | Carbon global hotkeys (no Accessibility permission needed) |
+| `Sources/MeasurementSignal.swift` | Calibration stimuli: `MultiTone` (8 tones, unit RMS, realtime-safe) + `PinkNoise` |
+| `Sources/BalanceCalibration.swift` | Goertzel tone detection, robust per-tone/block/trial statistics, balance recommendation |
+| `Sources/MicCapture.swift` | Raw-HAL microphone input IOProc (mic-array mix-down) + `MonoRing` |
+| `Sources/BalanceWizardView.swift` | Calibration wizard: seal gate, interleaved 3-trials-per-ear state machine, window UI |
 | `Sources/EQView.swift`, `FrequencyResponseView.swift`, `AutoEQPickerView.swift`, `LevelMeterView.swift` | SwiftUI menu-bar UI |
 | `Prototypes/TapProto/` | Minimal standalone tap validation prototype (kept as reference) |
 
@@ -76,6 +83,20 @@ These cost real debugging time; do not regress them.
    COW-allocate), `vDSP_biquadm_SetTargetsDouble` for lock-free coefficient
    updates. Control values are single-word floats written by the main thread
    and read by the IO thread (word-atomic on AArch64).
+8. **Stalled aggregate after rapid create/destroy.** Quitting and relaunching
+   within seconds (or many tap/aggregate cycles in one coreaudiod session —
+   e.g. repeated dev deploys) can yield a start where everything reports
+   success ("Running" logged, `AudioDeviceStart` = noErr) but the IOProc is
+   never invoked: `callbacks=0`, total silence. Observed 2026-07-07; even an
+   immediate in-process restart stayed dead, while relaunching after ~45 s
+   recovered. The engine runs a 5 s start watchdog (`scheduleStartWatchdog`)
+   that restarts once and then surfaces an error; when developing, leave a
+   pause between deploy cycles.
+9. **UI observation isolation.** Any `@Observable` engine property mutated by
+   the 30 fps meter timer (peaks, spectrum) must be read only in small leaf
+   views, never in `EQView`'s body — a body-level read re-diffs the whole
+   panel and re-runs AppKit layout 30×/s (~47% CPU). Same family: no blocking
+   calls (SMAppService XPC, HAL device enumeration) in any view body.
 
 ## DSP notes
 
@@ -101,17 +122,33 @@ These cost real debugging time; do not regress them.
   release-smoothed at 3 dB/frame. Undo/redo snapshots (bands + preamp) are
   recorded through the same `applyAllBands`/`setPreamp` funnels the UI
   already uses, with sub-0.8 s bursts coalesced into one step.
+- Balance calibration: differential per-ear level measurement — the same
+  uncalibrated mic measures both cups, so mic response and coupling cancel
+  in the L−R comparison. Stimulus is 8 log-spaced tones (500 Hz–4 kHz,
+  unit-RMS sum, −20 dBFS injection); detection is one Goertzel per tone,
+  so broadband room/fan noise contributes only what falls exactly on the
+  tone bins (validated: level recovered within 0.5 dB under noise 10 dB
+  above the stimulus). Robustness is layered medians: per tone across
+  0.5 s blocks (movement), across three re-seated trials (placement,
+  interleaved L,R,L,R,L,R so drift cancels), and across per-tone L−R
+  deltas (a seating-killed tone). Ambient tone-bin power (captured before
+  any stimulus) is subtracted per tone; a live seal gate arms Measure only
+  after ~1 s of level stability. `balance = ±(1 − 10^(−|Δ|/20))` maps the
+  measured delta onto the engine's linear one-side attenuation exactly.
 
 ## Testing
 
-`swift test` — 52 tests covering coefficient correctness (center gains, shelf
+`swift test` — 88 tests covering coefficient correctness (center gains, shelf
 asymptotes, crossover slopes/-3 dB/-6 dB points), the vDSP chain end-to-end
 (sine gain, transparency, per-channel independence), limiter behavior (ceiling,
 transparency, crest-factor preservation, transient catching), FIR design
 accuracy, streaming convolution (identity, delay, multi-partition),
 Equalizer APO import/export round-trips, spectrum calibration (0 dBFS sine,
-floor, release), undo-history coalescing, Q↔octave round-trips, and
-suggested-band/auto-range placement.
+floor, release), undo-history coalescing, Q↔octave round-trips,
+suggested-band/auto-range placement, balance text entry, and the calibration
+stack (stimulus level/pinkness/tone isolation, Goertzel detection under
+10 dB-louder noise, block/trial/tone-delta median robustness, ring-buffer
+seams, recommendation math).
 
 Live verification: `~/Library/Logs/ParaEQ.log` logs engine starts, device
 changes, and a status line (callback count + peaks) every 10 s while running.
