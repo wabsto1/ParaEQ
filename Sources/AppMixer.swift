@@ -48,9 +48,29 @@ final class AppMixer {
     /// Adjustment order; keeps exception order stable across gain changes.
     private var adjustOrder: [String] = []
 
+    @ObservationIgnored private weak var engine: AudioEngine?
+    @ObservationIgnored private(set) var directory: AppAudioDirectory?
+    @ObservationIgnored private var saveWork: DispatchWorkItem?
+    @ObservationIgnored private var graceWork: DispatchWorkItem?
+    private static let defaultsKey = "paraeq.appMixer"
+
     init(settings: [String: AppMixerSetting] = [:]) {
         self.settings = settings
         adjustOrder = Array(settings.keys).sorted()
+    }
+
+    convenience init(engine: AudioEngine?, directory: AppAudioDirectory?) {
+        var loaded: [String: AppMixerSetting] = [:]
+        if let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
+           let saved = try? JSONDecoder().decode(
+               [String: AppMixerSetting].self, from: data) {
+            loaded = saved
+        }
+        self.init(settings: loaded)
+        self.engine = engine
+        self.directory = directory
+        directory?.start()
+        sync()
     }
 
     var slotsFull: Bool {
@@ -65,12 +85,14 @@ final class AppMixer {
         var s = setting(for: bundleID)
         s.gainDB = min(max(dB, -60), 6)
         apply(s, for: bundleID)
+        sync()
     }
 
     func setMuted(_ on: Bool, for bundleID: String) {
         var s = setting(for: bundleID)
         s.muted = on
         apply(s, for: bundleID)
+        sync()
     }
 
     /// Remove the app's setting entirely (unpin); tap reclaimed immediately.
@@ -78,6 +100,7 @@ final class AppMixer {
         settings[bundleID] = nil
         graceDeadlines[bundleID] = nil
         adjustOrder.removeAll { $0 == bundleID }
+        sync()
     }
 
     private func apply(_ s: AppMixerSetting, for bundleID: String) {
@@ -145,5 +168,60 @@ final class AppMixer {
     /// Earliest pending grace deadline (for scheduling a resync).
     func nextGraceDeadline(now: Date) -> Date? {
         graceDeadlines.values.filter { $0 > now }.min()
+    }
+
+    // MARK: - Wiring: engine sync, persistence, display list
+
+    /// Rows for the UI: running audio apps first (directory order), then
+    /// pinned apps (adjusted but not currently running) as placeholders.
+    var displayApps: [AudioApp] {
+        let running = directory?.apps ?? []
+        let runningIDs = Set(running.map(\.bundleID))
+        let pinned = settings.keys
+            .filter { !runningIDs.contains($0) }
+            .sorted()
+            .map { AudioApp(bundleID: $0, name: displayName(for: $0),
+                            objectIDs: [], isPlaying: false) }
+        return running + pinned
+    }
+
+    private func displayName(for bundleID: String) -> String {
+        bundleID.components(separatedBy: ".").last ?? bundleID
+    }
+
+    /// Directory changed (apps appeared/vanished, playback state flipped).
+    func appsChanged() { sync() }
+
+    /// Recompute desired exceptions and push to the engine; reschedule the
+    /// grace-expiry resync.
+    private func sync() {
+        let now = Date()
+        let apps = directory?.apps ?? []
+        engine?.setAppExceptions(desiredExceptions(apps: apps, now: now))
+        graceWork?.cancel()
+        if let deadline = nextGraceDeadline(now: now) {
+            let work = DispatchWorkItem { [weak self] in self?.sync() }
+            graceWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + deadline.timeIntervalSince(now) + 0.5,
+                execute: work)
+        }
+        scheduleSave()
+    }
+
+    private func scheduleSave() {
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.savePendingNow() }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    func savePendingNow() {
+        saveWork?.cancel()
+        if settings.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.defaultsKey)
+        } else if let data = try? JSONEncoder().encode(settings) {
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        }
     }
 }

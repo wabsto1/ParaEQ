@@ -370,3 +370,40 @@ final class AppDirectoryGroupingTests: XCTestCase {
         XCTAssertEqual(a, b)   // order of discovery must not change identity
     }
 }
+
+// MARK: - AppMixer wiring (persistence + display list)
+
+final class AppMixerWiringTests: XCTestCase {
+
+    private let key = "paraeq.appMixer"
+    override func setUp() { UserDefaults.standard.removeObject(forKey: key) }
+    override func tearDown() { UserDefaults.standard.removeObject(forKey: key) }
+
+    func testSettingsPersistAndReload() {
+        let m = AppMixer(engine: nil, directory: nil)
+        m.setGain(-9, for: "com.apple.Music")
+        m.setMuted(true, for: "com.spotify.client")
+        m.savePendingNow()
+        let m2 = AppMixer(engine: nil, directory: nil)
+        XCTAssertEqual(m2.setting(for: "com.apple.Music").gainDB, -9)
+        XCTAssertTrue(m2.setting(for: "com.spotify.client").muted)
+    }
+
+    func testResetRemovesFromPersistence() {
+        let m = AppMixer(engine: nil, directory: nil)
+        m.setGain(-9, for: "a")
+        m.reset("a")
+        m.savePendingNow()
+        XCTAssertTrue(AppMixer(engine: nil, directory: nil).settings.isEmpty)
+    }
+
+    func testDisplayAppsIncludesPinnedNotRunning() {
+        let m = AppMixer(engine: nil, directory: nil)
+        m.setGain(-9, for: "com.gone.app")
+        let rows = m.displayApps
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].bundleID, "com.gone.app")
+        XCTAssertFalse(rows[0].isPlaying)
+        XCTAssertTrue(rows[0].objectIDs.isEmpty)   // pinned placeholder
+    }
+}
