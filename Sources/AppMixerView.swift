@@ -123,13 +123,27 @@ private struct AppMixerRow: View {
         .padding(.vertical, 1)
     }
 
+    // I5 (icon caching): row bodies re-render on every settings-dict change
+    // (observation granularity is the whole dict, not per-row), so a slider
+    // drag re-evaluates every visible row's body many times a second.
+    // Without caching, each of those re-evaluations queried Launch Services
+    // via NSRunningApplication — main-thread-only cache, populated once per
+    // bundleID on first miss, consulted (not re-queried) on every body eval.
+    @MainActor
+    private static var iconCache: [String: Image] = [:]
+
     private var appIcon: Image {
+        if let cached = Self.iconCache[app.bundleID] { return cached }
+        let resolved: Image
         if let nsApp = NSRunningApplication
             .runningApplications(withBundleIdentifier: app.bundleID).first,
            let icon = nsApp.icon {
-            return Image(nsImage: icon)
+            resolved = Image(nsImage: icon)
+        } else {
+            resolved = Image(systemName: "app.dashed")
         }
-        return Image(systemName: "app.dashed")
+        Self.iconCache[app.bundleID] = resolved
+        return resolved
     }
 
     private func gainLabel(_ s: AppMixerSetting) -> String {

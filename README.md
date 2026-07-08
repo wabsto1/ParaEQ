@@ -84,7 +84,7 @@ Filter math is RBJ Audio-EQ-Cookbook biquads run through `vDSP_biquadm` with per
 ## Testing
 
 ```bash
-swift test   # 124 DSP/parser/logic tests: coefficients, slopes, limiter, FIR design, convolver, round-trips, spectrum calibration, undo history, calibration signal/detection/statistics, App Mixer policy
+swift test   # 130 DSP/parser/logic tests: coefficients, slopes, limiter, FIR design, convolver, round-trips, spectrum calibration, undo history, calibration signal/detection/statistics, App Mixer policy
 ```
 
 **[User Guide](docs/USER-GUIDE.md)** (installation, permissions, every feature) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md)

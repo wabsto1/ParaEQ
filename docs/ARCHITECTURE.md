@@ -210,7 +210,7 @@ These cost real debugging time; do not regress them.
 
 ## Testing
 
-`swift test` — 124 tests covering coefficient correctness (center gains, shelf
+`swift test` — 130 tests covering coefficient correctness (center gains, shelf
 asymptotes, crossover slopes/-3 dB/-6 dB points), the vDSP chain end-to-end
 (sine gain, transparency, per-channel independence), limiter behavior (ceiling,
 transparency, crest-factor preservation, transient catching), FIR design
