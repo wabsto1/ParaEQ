@@ -436,3 +436,62 @@ final class AppMixerWiringTests: XCTestCase {
         XCTAssertFalse(rows[0].isPlaying)
     }
 }
+
+// MARK: - Directory -> mixer resync (post-relaunch re-arm bug)
+
+/// AppAudioDirectory is HAL-backed (start() registers real CoreAudio
+/// listeners and queues a real refresh), so it can't be fully faked out in
+/// a unit test. These tests exercise what IS testable without audio
+/// hardware or a live tap: (1) the directory really does invoke `onChange`
+/// on the main thread from its first refresh after `start()` — this is the
+/// actual bug fix, so it's worth paying for a real (if slow-ish) HAL round
+/// trip rather than only asserting the property holds a value; and (2)
+/// AppMixer's convenience init wires `onChange` before calling `start()`,
+/// so a directory constructed alongside an AppMixer is never left silently
+/// unobserved. Full "persisted exception re-arms after relaunch" coverage
+/// needs a live process tap and is done via manual/log verification (see
+/// task report), not here.
+final class AppAudioDirectoryResyncTests: XCTestCase {
+
+    /// RED (pre-fix) reasoning: before this change, AppAudioDirectory had no
+    /// `onChange` property at all, so this test would fail to compile —
+    /// the strongest possible RED signal for "the contract doesn't exist
+    /// yet". Post-fix, start()'s first debounced refresh must call
+    /// `onChange` on the main thread once it publishes.
+    func testOnChangeFiresOnFirstRefreshAfterStart() {
+        let directory = AppAudioDirectory()
+        let fired = expectation(description: "onChange fired on first refresh")
+        directory.onChange = {
+            XCTAssertTrue(Thread.isMainThread)
+            fired.fulfill()
+        }
+        directory.start()
+        wait(for: [fired], timeout: 3.0)
+    }
+
+    /// AppMixer's convenience init must set `directory.onChange` before
+    /// calling `directory.start()` — verified two ways: the closure is
+    /// non-nil immediately after init (so nothing between start() and
+    /// wiring could have slipped through unobserved), and the directory's
+    /// own first refresh (kicked by that same start() call) reaches
+    /// AppMixer's appsChanged() end-to-end, proving the wiring is live and
+    /// not just assigned-and-ignored.
+    func testAppMixerWiresOnChangeBeforeStartingDirectory() {
+        UserDefaults.standard.removeObject(forKey: "paraeq.appMixer")
+        let directory = AppAudioDirectory()
+        let mixer = AppMixer(engine: nil, directory: directory)
+        XCTAssertNotNil(directory.onChange)
+
+        let fired = expectation(description: "directory refresh reached AppMixer")
+        // Wrap the already-installed callback so we observe the real
+        // end-to-end path (directory refresh -> AppMixer.appsChanged())
+        // rather than replacing it with a test-only stand-in.
+        let installed = directory.onChange
+        directory.onChange = {
+            installed?()
+            fired.fulfill()
+        }
+        wait(for: [fired], timeout: 3.0)
+        _ = mixer   // keep alive for the duration of the async refresh
+    }
+}

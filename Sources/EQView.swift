@@ -99,9 +99,6 @@ struct EQView: View {
         .onChange(of: engine.balance, initial: true) { _, b in
             balanceText = BalanceEntry.label(for: b)
         }
-        .onChange(of: appMixer?.directory?.generation ?? 0) { _, _ in
-            appMixer?.appsChanged()
-        }
     }
 
     // MARK: - Graph controls (undo/redo, spectrum toggle, gain range)

@@ -18,6 +18,15 @@ final class AppAudioDirectory {
     private(set) var apps: [AudioApp] = []
     private(set) var generation = 0
 
+    /// Fires on the MAIN thread at the end of every refresh publish (after
+    /// `apps`/`generation` are updated) — including the very first refresh
+    /// after `start()`, so callers don't need a UI-driven `.onChange` to
+    /// observe the initial population. Model-layer contract: set this
+    /// BEFORE calling `start()` (see AppMixer's convenience init) so the
+    /// first async refresh can't complete unobserved. Not `@ObservationIgnored`-
+    /// exempt from anything special; it's just a plain closure property.
+    var onChange: (() -> Void)?
+
     @ObservationIgnored
     private let queue = DispatchQueue(label: "com.paraeq.appdirectory")
     @ObservationIgnored private var started = false
@@ -147,9 +156,12 @@ final class AppAudioDirectory {
         }
         let grouped = Self.group(snapshots, resolve: Self.resolveApp)
         DispatchQueue.main.async { [weak self] in
-            guard let self, grouped != self.apps else { return }
-            self.apps = grouped
-            self.generation &+= 1
+            guard let self else { return }
+            if grouped != self.apps {
+                self.apps = grouped
+                self.generation &+= 1
+            }
+            self.onChange?()
         }
     }
 

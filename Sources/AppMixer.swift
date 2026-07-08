@@ -69,6 +69,14 @@ final class AppMixer {
         self.init(settings: loaded)
         self.engine = engine
         self.directory = directory
+        // Set onChange BEFORE start(): start() kicks its first refresh via
+        // `queue.async` (queue-confined, HAL-backed), which always publishes
+        // asynchronously later on .main — never synchronously inside
+        // start() itself. So there is no window between start() and this
+        // assignment in which a refresh could complete and publish
+        // unobserved; wiring the callback first is just belt-and-suspenders
+        // (and reads more clearly as "observe, then start observing").
+        directory?.onChange = { [weak self] in self?.appsChanged() }
         directory?.start()
         sync()
     }
