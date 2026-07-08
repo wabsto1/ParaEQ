@@ -779,9 +779,21 @@ final class AudioEngine {
             }
         appExceptions = capped
         if sameSet {
-            // Gain-only path: no restart pending or needed for this change.
-            appExceptionRestartWork?.cancel()
-            appExceptionRestartWork = nil
+            // Gain-only path: do NOT touch appExceptionRestartWork here. A
+            // drag emits one membership-changing tick (schedules the 0.4 s
+            // restart below) followed by a stream of gain-only ticks with
+            // the same membership — cancelling the pending restart on each
+            // of those leaves it permanently cancelled, so the engine never
+            // rebuilds taps for the new set (observed live: apps=2 desired,
+            // zero taps built, mixer silently non-functional). A pending
+            // membership restart must survive gain-only writes: restart()
+            // -> start() -> createTap() rebuilds `realized` from the latest
+            // `appExceptions` (set just above on every call, including
+            // gain-only ones) and reseeds appGainPtr from it, so these slot
+            // writes are never lost — merely superseded by the fuller
+            // rebuild. Only a NEW membership change (the `else` branch
+            // below) should cancel-and-replace the pending item.
+            //
             // Write by REALIZED index (C1), not desired position — a
             // failed/dropped tap can make the two lists diverge in count.
             // For each tap that actually exists, look up its fresh gain by
