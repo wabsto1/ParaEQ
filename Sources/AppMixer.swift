@@ -172,17 +172,24 @@ final class AppMixer {
 
     // MARK: - Wiring: engine sync, persistence, display list
 
-    /// Rows for the UI: running audio apps first (directory order), then
-    /// pinned apps (adjusted but not currently running) as placeholders.
+    /// Rows for the UI: apps currently playing audio, plus apps the user has
+    /// adjusted — those stay pinned (directory order) when they go silent,
+    /// or as placeholders (sorted bundleID order) when absent entirely.
     var displayApps: [AudioApp] {
-        let running = directory?.apps ?? []
-        let runningIDs = Set(running.map(\.bundleID))
+        displayApps(from: directory?.apps ?? [])
+    }
+
+    /// Pure filter, testable without a live `AppAudioDirectory`. `apps` is
+    /// the full unfiltered directory snapshot.
+    func displayApps(from apps: [AudioApp]) -> [AudioApp] {
+        let visible = apps.filter { $0.isPlaying || settings[$0.bundleID] != nil }
+        let visibleIDs = Set(visible.map(\.bundleID))
         let pinned = settings.keys
-            .filter { !runningIDs.contains($0) }
+            .filter { !visibleIDs.contains($0) }
             .sorted()
             .map { AudioApp(bundleID: $0, name: displayName(for: $0),
                             objectIDs: [], isPlaying: false) }
-        return running + pinned
+        return visible + pinned
     }
 
     private func displayName(for bundleID: String) -> String {

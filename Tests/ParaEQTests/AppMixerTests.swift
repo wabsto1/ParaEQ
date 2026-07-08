@@ -406,4 +406,33 @@ final class AppMixerWiringTests: XCTestCase {
         XCTAssertFalse(rows[0].isPlaying)
         XCTAssertTrue(rows[0].objectIDs.isEmpty)   // pinned placeholder
     }
+
+    func testDisplayAppsExcludesNonPlayingUnadjustedApp() {
+        let m = AppMixer(engine: nil, directory: nil)
+        let silent = AudioApp(bundleID: "com.silent.app", name: "silent",
+                               objectIDs: [42], isPlaying: false)
+        let rows = m.displayApps(from: [silent])
+        XCTAssertTrue(rows.isEmpty)
+    }
+
+    func testDisplayAppsIncludesPlayingApp() {
+        let m = AppMixer(engine: nil, directory: nil)
+        let playing = AudioApp(bundleID: "com.playing.app", name: "playing",
+                                objectIDs: [7], isPlaying: true)
+        let rows = m.displayApps(from: [playing])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].bundleID, "com.playing.app")
+    }
+
+    func testDisplayAppsIncludesNonPlayingAdjustedAppWithRealObjectIDs() {
+        let m = AppMixer(engine: nil, directory: nil)
+        m.setGain(-9, for: "com.adjusted.app")
+        let silentAdjusted = AudioApp(bundleID: "com.adjusted.app", name: "adjusted",
+                                       objectIDs: [11, 12], isPlaying: false)
+        let rows = m.displayApps(from: [silentAdjusted])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].bundleID, "com.adjusted.app")
+        XCTAssertEqual(rows[0].objectIDs, [11, 12])
+        XCTAssertFalse(rows[0].isPlaying)
+    }
 }
