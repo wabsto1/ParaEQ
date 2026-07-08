@@ -58,6 +58,8 @@ private final class IOCtx {
     let peakRPtr: UnsafeMutablePointer<Float>
     /// Balance calibration: 0 = off, 1 = stimulus to L, 2 = to R.
     let measurePtr: UnsafeMutablePointer<Float>
+    /// Per-exception-slot linear gains (16 fixed slots; unused slots 0).
+    let appGainPtr: UnsafeMutablePointer<Float>
     let tone: MultiTone
     var callbackCount: UInt64 = 0
 
@@ -67,7 +69,8 @@ private final class IOCtx {
          preampPtr: UnsafeMutablePointer<Float>, volumePtr: UnsafeMutablePointer<Float>,
          balancePtr: UnsafeMutablePointer<Float>, bypassPtr: UnsafeMutablePointer<Float>,
          peakLPtr: UnsafeMutablePointer<Float>, peakRPtr: UnsafeMutablePointer<Float>,
-         measurePtr: UnsafeMutablePointer<Float>) {
+         measurePtr: UnsafeMutablePointer<Float>,
+         appGainPtr: UnsafeMutablePointer<Float>) {
         self.eq = eq
         self.limiter = limiter
         self.crossfeed = crossfeed
@@ -82,6 +85,7 @@ private final class IOCtx {
         self.peakLPtr = peakLPtr
         self.peakRPtr = peakRPtr
         self.measurePtr = measurePtr
+        self.appGainPtr = appGainPtr
         tone = MultiTone(sampleRate: eq.sampleRate)
         stageL = .allocate(capacity: maxFrames)
         stageL.initialize(repeating: 0, count: maxFrames)
@@ -165,6 +169,13 @@ final class AudioEngine {
         FrequencyResponse.logFrequencies(count: 120)
     @ObservationIgnored private var history: EditHistory<EQEditState>!
 
+    /// Desired per-app exceptions (adjusted apps). The *set* (bundleIDs +
+    /// process objects) is baked into taps at start(); gains are live.
+    private(set) var appExceptions: [AppException] = []
+    @ObservationIgnored private var exceptionTapIDs: [AudioObjectID] = []
+    @ObservationIgnored private var exceptionTapUUIDs: [UUID] = []
+    @ObservationIgnored private var appGainPtr: UnsafeMutablePointer<Float>?
+
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
@@ -242,6 +253,11 @@ final class AudioEngine {
             peakRPtr!.initialize(to: 0)
             measurePtr = .allocate(capacity: 1)
             measurePtr!.initialize(to: 0)
+            appGainPtr = .allocate(capacity: 16)
+            appGainPtr!.initialize(repeating: 0, count: 16)
+            for (i, ex) in appExceptions.enumerated() where i < 16 {
+                (appGainPtr! + i).pointee = ex.gainLinear
+            }
             preampLinearPtr = .allocate(capacity: 1)
             if autoPreamp { computeAutoPreamp() }
             preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
@@ -335,7 +351,8 @@ final class AudioEngine {
     // MARK: - Tap + aggregate + IOProc
 
     private func createTap() throws -> AudioStreamBasicDescription {
-        // Exclude our own process so our re-emitted output doesn't feed back.
+        // Exclude our own process so our re-emitted output doesn't feed back,
+        // and every excepted app so it isn't captured twice.
         var pid = pid_t(ProcessInfo.processInfo.processIdentifier)
         var selfProcess = AudioObjectID(kAudioObjectUnknown)
         var addr = AudioObjectPropertyAddress(
@@ -347,7 +364,8 @@ final class AudioEngine {
             AudioObjectID(kAudioObjectSystemObject), &addr,
             UInt32(MemoryLayout<pid_t>.size), &pid, &size, &selfProcess))
 
-        let exclude: [AudioObjectID] = selfProcess == kAudioObjectUnknown ? [] : [selfProcess]
+        var exclude: [AudioObjectID] = selfProcess == kAudioObjectUnknown ? [] : [selfProcess]
+        exclude += appExceptions.flatMap(\.objectIDs)
         let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: exclude)
         desc.uuid = UUID()
         desc.name = "ParaEQ System Tap"
@@ -357,6 +375,30 @@ final class AudioEngine {
 
         let err = AudioHardwareCreateProcessTap(desc, &tapID)
         guard err == noErr else { throw EngineError.tapDenied(err) }
+
+        // One dedicated tap per excepted app; muted at source, re-injected by
+        // the IOProc at the app's slot gain. Failure tears the tap out of the
+        // exception list rather than failing the whole engine (audio must
+        // keep playing).
+        exceptionTapIDs = []
+        exceptionTapUUIDs = []
+        var kept: [AppException] = []
+        for ex in appExceptions {
+            let d = CATapDescription(stereoMixdownOfProcesses: ex.objectIDs)
+            d.uuid = UUID()
+            d.name = "ParaEQ App Tap (\(ex.bundleID))"
+            d.isPrivate = true
+            d.muteBehavior = CATapMuteBehavior.mutedWhenTapped
+            var id = AudioObjectID(kAudioObjectUnknown)
+            if AudioHardwareCreateProcessTap(d, &id) == noErr {
+                exceptionTapIDs.append(id)
+                exceptionTapUUIDs.append(d.uuid)
+                kept.append(ex)
+            } else {
+                EngineLog.log("App mixer: tap for \(ex.bundleID) failed — dropping exception")
+            }
+        }
+        appExceptions = kept
 
         var fmt = AudioStreamBasicDescription()
         addr = AudioObjectPropertyAddress(
@@ -371,6 +413,18 @@ final class AudioEngine {
     private var tapUUID: UUID?
 
     private func createAggregate(outputUID: String) throws {
+        var tapList: [[String: Any]] = [
+            [
+                kAudioSubTapUIDKey: tapUUID!.uuidString,
+                kAudioSubTapDriftCompensationKey: true,
+            ]
+        ]
+        for uuid in exceptionTapUUIDs {
+            tapList.append([
+                kAudioSubTapUIDKey: uuid.uuidString,
+                kAudioSubTapDriftCompensationKey: true,
+            ])
+        }
         // The real output MUST be the main sub-device; a tap-only aggregate
         // silently produces zero samples.
         let description: [String: Any] = [
@@ -383,12 +437,7 @@ final class AudioEngine {
             kAudioAggregateDeviceSubDeviceListKey: [
                 [kAudioSubDeviceUIDKey: outputUID]
             ],
-            kAudioAggregateDeviceTapListKey: [
-                [
-                    kAudioSubTapUIDKey: tapUUID!.uuidString,
-                    kAudioSubTapDriftCompensationKey: true,
-                ]
-            ],
+            kAudioAggregateDeviceTapListKey: tapList,
         ]
         try check(AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID))
     }
@@ -418,7 +467,8 @@ final class AudioEngine {
                         preampPtr: preampLinearPtr!, volumePtr: volumePtr!,
                         balancePtr: balancePtr!, bypassPtr: bypassPtr!,
                         peakLPtr: peakLPtr!, peakRPtr: peakRPtr!,
-                        measurePtr: measurePtr!)
+                        measurePtr: measurePtr!,
+                        appGainPtr: appGainPtr!)
         let um = Unmanaged.passRetained(ctx)
         ioCtx = um
 
@@ -429,26 +479,13 @@ final class AudioEngine {
 
             // 1. Stage tap input as planar L/R
             //    (handles interleaved or planar input layouts).
-            var frames = 0
-            var channel = 0
             let bypassed = c.bypassPtr.pointee > 0.5
             let preamp = bypassed ? 1.0 : c.preampPtr.pointee
             let inABL = UnsafeMutableAudioBufferListPointer(
                 UnsafeMutablePointer(mutating: inInputData))
-            for buf in inABL {
-                let n = max(Int(buf.mNumberChannels), 1)
-                guard let data = buf.mData?.assumingMemoryBound(to: Float.self) else { continue }
-                frames = min(Int(buf.mDataByteSize) / (n * 4), c.maxFrames)
-                for ch in 0..<n where channel < 2 {
-                    let dst = channel == 0 ? c.stageL : c.stageR
-                    for f in 0..<frames { dst[f] = data[f * n + ch] }
-                    channel += 1
-                }
-            }
-            // Mono tap → duplicate to both stage channels.
-            if channel == 1 {
-                for f in 0..<frames { c.stageR[f] = c.stageL[f] }
-            }
+            let frames = InputStaging.stage(
+                inABL: inABL, stageL: c.stageL, stageR: c.stageR,
+                appGains: c.appGainPtr, maxFrames: c.maxFrames)
             guard frames > 0 else { return }
             // Pre-EQ spectrum sees the raw source, before preamp.
             c.spectrum?.writePre(l: c.stageL, r: c.stageR, frames: frames)
@@ -702,6 +739,31 @@ final class AudioEngine {
         bypassPtr?.pointee = on ? 1 : 0
     }
 
+    // MARK: - App mixer (per-app exception taps)
+
+    /// Replace the desired exception set. Gain-only changes are applied live
+    /// (atomic slot writes); membership changes restart the engine so taps
+    /// and the global exclusion list are rebuilt (the proven restart path —
+    /// no live tap/aggregate mutation).
+    func setAppExceptions(_ new: [AppException]) {
+        let capped = Array(new.prefix(16))
+        let sameSet = capped.count == appExceptions.count
+            && zip(capped, appExceptions).allSatisfy {
+                $0.bundleID == $1.bundleID && $0.objectIDs == $1.objectIDs
+            }
+        appExceptions = capped
+        if sameSet {
+            if let p = appGainPtr {
+                for (i, ex) in capped.enumerated() { (p + i).pointee = ex.gainLinear }
+            }
+            return
+        }
+        if isRunning {
+            EngineLog.log("App mixer: exception set changed (\(capped.map(\.bundleID).joined(separator: ","))) — restarting")
+            restart()
+        }
+    }
+
     // MARK: - Device auto-profiles (preset per output device)
 
     var currentOutputUID: String? {
@@ -948,8 +1010,9 @@ final class AudioEngine {
                 self.watchdogRetried = false
             }
             if self.meterTicks % 300 == 0, let ctx = self.ioCtx?.takeUnretainedValue() {
-                EngineLog.log(String(format: "status: callbacks=%llu peakL=%.3f peakR=%.3f",
-                                     ctx.callbackCount, self.peakL, self.peakR))
+                EngineLog.log(String(format: "status: callbacks=%llu peakL=%.3f peakR=%.3f apps=%d",
+                                     ctx.callbackCount, self.peakL, self.peakR,
+                                     self.appExceptions.count))
             }
         }
     }
@@ -970,6 +1033,10 @@ final class AudioEngine {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
+        for id in exceptionTapIDs { AudioHardwareDestroyProcessTap(id) }
+        exceptionTapIDs = []
+        exceptionTapUUIDs = []
+        if let p = appGainPtr { p.deallocate(); appGainPtr = nil }
         ioCtx?.release(); ioCtx = nil
         spectrumTap = nil
         biquad = nil
