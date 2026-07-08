@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct EQView: View {
     @Bindable var engine: AudioEngine
+    var appMixer: AppMixer? = nil
     /// true when hosted in the resizable pop-out window rather than the
     /// menu-bar panel (flexible layout, no pop-out button).
     var inWindow = false
@@ -44,6 +45,10 @@ struct EQView: View {
             }
             Divider()
             presetSection
+            if let appMixer {
+                Divider()
+                AppMixerView(mixer: appMixer)
+            }
             Divider()
             graphControls
             FrequencyResponseView(
@@ -93,6 +98,9 @@ struct EQView: View {
         }
         .onChange(of: engine.balance, initial: true) { _, b in
             balanceText = BalanceEntry.label(for: b)
+        }
+        .onChange(of: appMixer?.directory?.generation ?? 0) { _, _ in
+            appMixer?.appsChanged()
         }
     }
 

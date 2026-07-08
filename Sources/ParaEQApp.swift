@@ -16,14 +16,14 @@ struct ParaEQApp: App {
 
     var body: some Scene {
         MenuBarExtra("ParaEQ", systemImage: "slider.vertical.3") {
-            EQView(engine: engine)
+            EQView(engine: engine, appMixer: appMixer)
         }
         .menuBarExtraStyle(.window)
 
         // Pop-out: the same UI in a resizable window (spectrum watching,
         // side-by-side use). Shares the one engine with the panel.
         Window("ParaEQ", id: "popout") {
-            EQView(engine: engine, inWindow: true)
+            EQView(engine: engine, appMixer: appMixer, inWindow: true)
         }
         .defaultSize(width: 520, height: 880)
 
