@@ -18,8 +18,8 @@ enum AutoAdvance {
 // Accuracy machinery, in the order it attacks the error budget:
 //  * seal gate — Measure only arms once the tone level has been stable,
 //    so every take starts from comparable coupling;
-//  * 3 re-seated trials per ear, interleaved L,R,L,R,L,R so slow drift
-//    (mic temperature, ambient, hand pressure) cancels between sides;
+//  * 3 re-seated trials per ear, grouped L,L,L,R,R,R (one ear-swap per
+//    run; re-seating spread dominates any slow drift at this timescale);
 //  * per-trial levels are per-tone medians across 0.5 s blocks (a bump
 //    mid-capture can't drag the level);
 //  * per-tone medians across trials, then the median of per-tone L−R
@@ -223,11 +223,12 @@ final class BalanceWizard {
 
     // MARK: Internals
 
-    /// Interleaved order: L1, R1, L2, R2, L3, R3 — slow drift lands on both
-    /// sides equally and cancels in the comparison.
+    /// Grouped order: L1, L2, L3, R1, R2, R3 — one ear finishes before the
+    /// swap, so the cup only changes ears once per run. (Interleaving would
+    /// cancel slow drift slightly better, but over a ~40 s run the drift is
+    /// far below the re-seating spread; ergonomics wins.)
     private func advance() {
-        if leftTrialTones.count < Self.trialsPerSide,
-           leftTrialTones.count <= rightTrialTones.count {
+        if leftTrialTones.count < Self.trialsPerSide {
             phase = .prompt(.left, trial: leftTrialTones.count + 1)
         } else if rightTrialTones.count < Self.trialsPerSide {
             phase = .prompt(.right, trial: rightTrialTones.count + 1)

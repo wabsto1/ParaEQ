@@ -82,9 +82,10 @@ Top to bottom:
   plays while you position the cup, and each measurement **starts by
   itself once the level has been stable** for about a second (the status
   line under the meter guides you) — no clicking between takes. Each ear
-  is measured **three times**, alternating L/R; after every take a beep
-  and a 5-second pause tell you to lift and re-seat the cup (or swap
-  ears), then the next measurement arms automatically. Robust averaging
+  is measured **three times** — all left takes first, then all right,
+  so you only swap ears once; after every take a beep and a 5-second
+  pause tell you to lift and re-seat the cup, then the next measurement
+  arms automatically. Robust averaging
   (medians over blocks, trials, and
   per-frequency differences) cancels placement luck, and the reported
   seating-to-seating spread tells you how trustworthy the result is
