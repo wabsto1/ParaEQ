@@ -128,6 +128,50 @@ final class BiquadEQProcessingTests: XCTestCase {
                        "channels process identically")
     }
 
+    func testLiveUpdateAppliesNewGain() throws {
+        // Regression: vDSP_biquadm_SetTargetsDouble was called with
+        // (offset, sections, 0, channels) — zero rows updated, so live
+        // coefficient updates were a silent no-op (only rebuilds applied).
+        let fs: Double = 48000
+        var bands = makeDefaultBands()
+        for i in bands.indices { bands[i].gain = 0 }
+        let eq = try XCTUnwrap(BiquadEQ(bands: bands, sampleRate: fs))
+
+        bands[5] = EQBand(frequency: 1000, gain: 6, q: 1.41,
+                          filterType: .parametric, enabled: true)
+        XCTAssertTrue(eq.update(bands: bands), "same section count — live path")
+
+        // Process past the coefficient ramp, then measure steady state.
+        let frames = 96000
+        var inL = [Float](repeating: 0, count: frames)
+        for i in 0..<frames {
+            inL[i] = sinf(2 * .pi * 1000 * Float(i) / Float(fs)) * 0.25
+        }
+        let inR = inL
+        var outL = [Float](repeating: 0, count: frames)
+        var outR = [Float](repeating: 0, count: frames)
+        inL.withUnsafeBufferPointer { l in
+            inR.withUnsafeBufferPointer { r in
+                outL.withUnsafeMutableBufferPointer { ol in
+                    outR.withUnsafeMutableBufferPointer { or2 in
+                        eq.process(inL: l.baseAddress!, inR: r.baseAddress!,
+                                   outL: ol.baseAddress!, outR: or2.baseAddress!,
+                                   frames: frames)
+                    }
+                }
+            }
+        }
+        func rms(_ x: ArraySlice<Float>) -> Float {
+            sqrtf(x.reduce(0) { $0 + $1 * $1 } / Float(x.count))
+        }
+        let gainDB = 20 * log10f(rms(outL[48000...]) / rms(inL[48000...]))
+        XCTAssertEqual(gainDB, 6.0, accuracy: 0.2,
+                       "updated coefficients must reach the running cascade")
+        let gainDBR = 20 * log10f(rms(outR[48000...]) / rms(inR[48000...]))
+        XCTAssertEqual(gainDBR, 6.0, accuracy: 0.2,
+                       "both channels take the live update")
+    }
+
     func testFlatChainIsTransparent() throws {
         let fs: Double = 48000
         var bands = makeDefaultBands()
