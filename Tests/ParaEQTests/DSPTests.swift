@@ -721,3 +721,34 @@ final class ExportRoundTripTests: XCTestCase {
         XCTAssertEqual(parsed.bands[3].filterType, .highShelf)
     }
 }
+
+final class AutoAdvanceTests: XCTestCase {
+    /// Hands-free start requires: prompting, idle, seal stable, gap elapsed.
+    func testStartsOnlyWhenAllConditionsMet() {
+        XCTAssertTrue(AutoAdvance.shouldStart(
+            prompting: true, busy: false, sealStable: true, gapTicksRemaining: 0))
+    }
+
+    func testReseatGapBlocksStart() {
+        XCTAssertFalse(AutoAdvance.shouldStart(
+            prompting: true, busy: false, sealStable: true, gapTicksRemaining: 1),
+            "a stable seal must not fire until the re-seat gap fully elapses")
+        XCTAssertFalse(AutoAdvance.shouldStart(
+            prompting: true, busy: false, sealStable: true,
+            gapTicksRemaining: Int(BalanceWizard.reseatGapSeconds * 30)))
+    }
+
+    func testUnstableSealBlocksStart() {
+        XCTAssertFalse(AutoAdvance.shouldStart(
+            prompting: true, busy: false, sealStable: false, gapTicksRemaining: 0))
+    }
+
+    func testBusyOrNonPromptPhaseBlocksStart() {
+        XCTAssertFalse(AutoAdvance.shouldStart(
+            prompting: true, busy: true, sealStable: true, gapTicksRemaining: 0),
+            "no overlapping captures")
+        XCTAssertFalse(AutoAdvance.shouldStart(
+            prompting: false, busy: false, sealStable: true, gapTicksRemaining: 0),
+            "done/failed/measuring phases never auto-start")
+    }
+}

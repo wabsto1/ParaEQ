@@ -1,4 +1,15 @@
 import SwiftUI
+import AppKit
+
+/// Hands-free auto-advance decision, pure for testability: a measurement
+/// starts only while prompting, with no capture in flight, once the seal
+/// gate is stable and the post-trial re-seat gap has fully elapsed.
+enum AutoAdvance {
+    static func shouldStart(prompting: Bool, busy: Bool,
+                            sealStable: Bool, gapTicksRemaining: Int) -> Bool {
+        prompting && !busy && sealStable && gapTicksRemaining == 0
+    }
+}
 
 // MARK: - Balance-calibration wizard
 //
@@ -46,6 +57,9 @@ final class BalanceWizard {
     private(set) var applied = false
     /// Seal gate state (~4 Hz updates while prompting).
     private(set) var sealStatus: SealStatus = .noSignal
+    /// Whole seconds left in the post-trial re-seat gap (0 = gap over).
+    /// Updated at most once per second so body reads stay cheap.
+    private(set) var gapSecondsShown = 0
 
     private let engine: AudioEngine
     private var mic: MicCapture?
@@ -53,12 +67,17 @@ final class BalanceWizard {
     private var task: Task<Void, Never>?
     private var levelTicks = 0
     private var sealHistory: [Double] = []
+    /// 30 fps ticks left before auto-start may arm again (re-seat time).
+    @ObservationIgnored private var gapTicksRemaining = 0
     /// Per-tone ambient captured once per session, before any stimulus.
     private var ambientToneDBs: [Double] = []
     private var ambientDB = BalanceCalibration.floorDB
     private var ambientReady = false
 
     static let captureSeconds = 3.0
+    /// Hands-free: hold-off after each capture before the next can auto-start,
+    /// so there's always time to lift and re-seat (or swap ears) the cup.
+    static let reseatGapSeconds = 5.0
     /// Re-seated measurements per ear; the average beats any single seating.
     static let trialsPerSide = 3
     /// Stimulus must clear the ambient tone-bin level by this much.
@@ -123,6 +142,8 @@ final class BalanceWizard {
         progress = 0
         sealStatus = .noSignal
         sealHistory = []
+        gapTicksRemaining = 0
+        gapSecondsShown = 0
         ambientReady = false
         guard engine.isRunning else {
             phase = .failed("Start the equalizer first — the test tone plays through it.")
@@ -190,6 +211,8 @@ final class BalanceWizard {
         if side == .left { leftTrialTones = [] } else { rightTrialTones = [] }
         applied = false
         advance()
+        // Same-side repeats keep the cup in place — force a re-seat pause.
+        startReseatGap()
     }
 
     func apply() {
@@ -228,10 +251,16 @@ final class BalanceWizard {
         }
     }
 
-    /// 30 fps: mic meter; every 8th tick (~4 Hz): seal-gate evaluation.
+    /// 30 fps: mic meter + re-seat gap countdown; every 8th tick (~4 Hz):
+    /// seal-gate evaluation and the hands-free auto-start decision.
     private func levelTick() {
         micLevel = mic?.level() ?? 0
         levelTicks += 1
+        if gapTicksRemaining > 0 {
+            gapTicksRemaining -= 1
+            let secs = (gapTicksRemaining + 29) / 30
+            if secs != gapSecondsShown { gapSecondsShown = secs }
+        }
         guard levelTicks % 8 == 0, ambientReady,
               case .prompt = phase, task == nil, let mic else { return }
         let toneDB = BalanceCalibration.tonePowerDB(
@@ -246,6 +275,18 @@ final class BalanceWizard {
         sealStatus = sealHistory.count == 4
             && (sealHistory.max()! - sealHistory.min()!) < Self.sealWindowDB
             ? .stable : .unstable
+        if AutoAdvance.shouldStart(prompting: true, busy: false,
+                                   sealStable: sealStatus == .stable,
+                                   gapTicksRemaining: gapTicksRemaining) {
+            measureCurrentSide()
+        }
+    }
+
+    /// Arm the post-capture hold-off and cue the user to re-seat.
+    private func startReseatGap() {
+        gapTicksRemaining = Int(Self.reseatGapSeconds * 30)
+        gapSecondsShown = Int(Self.reseatGapSeconds)
+        NSSound.beep()   // "lift and re-seat now" — fires only inside the gap
     }
 
     private func measure(_ side: Side, trial: Int) async {
@@ -277,6 +318,7 @@ final class BalanceWizard {
             phase = .prompt(side, trial: trial)
             sealHistory = []
             sealStatus = .noSignal
+            startReseatGap()
             return
         }
 
@@ -290,6 +332,7 @@ final class BalanceWizard {
         if side == .left { leftTrialTones.append(toneDBs) }
         else { rightTrialTones.append(toneDBs) }
         advance()
+        if case .prompt = phase { startReseatGap() }
 
         if phase == .done, let l = leftStats, let r = rightStats, let d = deltaDB {
             EngineLog.log(String(format:
@@ -365,20 +408,21 @@ struct BalanceWizardView: View {
                     .multilineTextAlignment(.center)
             }
             MicLevelBar(wizard: wizard)
-            sealStatusLine
-            Button("Measure (\(trial)/\(BalanceWizard.trialsPerSide))") {
-                wizard.measureCurrentSide()
+            if wizard.gapSecondsShown > 0 {
+                Text("Lift and re-seat — next measurement arms in \(wizard.gapSecondsShown) s")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                sealStatusLine
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(wizard.sealStatus != .stable)
         }
     }
 
     private var sealStatusLine: some View {
         let (text, color): (String, Color) = switch wizard.sealStatus {
         case .noSignal: ("Waiting for the tone… seat the cup over the mic", .secondary)
-        case .unstable: ("Signal found — hold still to arm", .orange)
-        case .stable: ("Seal stable — ready to measure", .green)
+        case .unstable: ("Signal found — hold still, measuring starts by itself", .orange)
+        case .stable: ("Seal stable — measuring…", .green)
         }
         return Text(text).font(.caption).foregroundStyle(color)
     }

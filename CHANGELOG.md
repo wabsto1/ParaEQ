@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Balance calibration is now hands-free**: measurements start
+  automatically once the seal is stable — no more clicking Measure while
+  holding an earcup against the mic. After each take, a beep and a
+  5-second re-seat pause separate the trials; the run flows L, R, L, R,
+  L, R on its own.
+
 ## 2.2.0 — 2026-07-08
 
 ### Added
