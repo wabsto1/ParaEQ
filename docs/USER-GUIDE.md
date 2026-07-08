@@ -134,6 +134,34 @@ The channel picker above the band list selects how the two channels are EQ'd:
 
 The graph and band list always show the set selected by the tabs.
 
+## App Mixer
+
+A collapsible section (collapsed by default) below the main controls lets you
+set **per-application volume and mute**, independent of the master Vol/Bal
+control — useful for turning down a notification-heavy app while music from
+another app stays untouched. Everything still passes through the same EQ.
+
+- Expand it to see a row per app currently playing audio, plus any app you've
+  already adjusted (even if it's gone quiet). Each row shows the app's icon,
+  name, a volume slider, and a mute button.
+- The slider ranges **−60 dB to +6 dB**; dragging below about −59.5 dB shows
+  **−∞** (fully silent) rather than a very-quiet-but-nonzero level.
+- **Mute** silences the app instantly without losing its slider position —
+  unmute restores the same level.
+- If you adjust an app and it then stops playing (or quits), its row stays
+  **pinned** so you don't lose the setting, dimmed with an **✕** button to
+  reset it back to unadjusted (0 dB, unmuted) and let it drop off the list.
+  A quit app's pinned adjustment reapplies automatically the next time it
+  plays audio.
+- Up to **16 apps** can be adjusted at once (the volume/mute cap); beyond
+  that, adjust one back to neutral before adding another.
+- Adjusting an app's volume or mute for the *first* time (or returning it to
+  neutral) causes a **brief audio gap of about 50 ms** across all audio while
+  ParaEQ reconfigures its capture; subsequent slider/mute changes on an
+  already-adjusted app are instant with no gap.
+- Settings are saved per app and restored automatically the next time you
+  launch ParaEQ.
+
 ## Keyboard shortcuts
 
 While the ParaEQ window is open:

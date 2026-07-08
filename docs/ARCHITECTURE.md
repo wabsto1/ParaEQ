@@ -31,6 +31,40 @@ Key point: the tap arrives as IOProc *input* on the same callback that writes th
 device *output* — there is no ring buffer, no second audio unit, and the system
 default device is never modified. A crash cannot leave the machine silent.
 
+### App Mixer (exception taps)
+
+Per-app volume/mute is layered onto the same aggregate rather than a parallel
+pipeline. Each app the user adjusts (an "exception") gets its **own** process
+tap (`.mutedWhenTapped`, `stereoMixdownOfProcesses: [pid]`) and is excluded
+from the global tap's process list; the global tap and every exception tap all
+live in the **one** private aggregate, so there is still a single IOProc.
+Hardware-verified by the Task 1 spike: each tap arrives as its own
+interleaved-stereo input buffer on the IOProc callback, in tap-list order with
+the global tap first.
+
+`InputStaging` (`Sources/InputStaging.swift`) sums the global pair plus each
+active exception buffer, each multiplied by one of **16 preallocated gain
+slots**, into the stage buffers the existing DSP chain already reads from —
+so the M/S → biquad → FIR → crossfeed → balance/volume → limiter chain is
+unaware App Mixer exists.
+
+Two different update paths, deliberately:
+
+- **Exception-set changes** (an app newly adjusted, or returned to neutral
+  after its 30 s grace period) change which taps exist, so they go through a
+  full **engine restart** — tear down and rebuild the aggregate/taps. This is
+  the only path verified not to corrupt tap/aggregate state (see gotcha 1
+  below); it costs a ~50 ms audio gap.
+- **Gain-only changes** (slider drag, mute toggle) on an already-adjusted app
+  write directly into that app's preallocated gain slot — no restart, no
+  gap, safe from the IO thread's read.
+
+A 30 s grace period after an app returns to neutral (0 dB, unmuted) delays
+the teardown restart, so quick back-and-forth adjustments don't thrash the
+aggregate. The exception set is capped at 16; if creating a given app's
+exception tap fails, that app's exception is dropped and the rest of the
+engine (global tap, other exceptions) keeps running unaffected.
+
 ## Files
 
 | File | Role |
@@ -51,6 +85,10 @@ default device is never modified. A crash cannot leave the machine silent.
 | `Sources/BalanceCalibration.swift` | Goertzel tone detection, robust per-tone/block/trial statistics, balance recommendation |
 | `Sources/MicCapture.swift` | Raw-HAL microphone input IOProc (mic-array mix-down) + `MonoRing` |
 | `Sources/BalanceWizardView.swift` | Calibration wizard: seal gate, interleaved 3-trials-per-ear state machine, window UI |
+| `Sources/AppMixer.swift` | App Mixer policy: per-app gain/mute settings, exceptions, grace period, 16-slot cap, persistence |
+| `Sources/AppAudioDirectory.swift` | HAL process discovery — enumerates apps currently registering audio output, grouped by app |
+| `Sources/InputStaging.swift` | Sums global + per-exception tap buffers × gain slots into the DSP chain's stage buffers |
+| `Sources/AppMixerView.swift` | Collapsible per-app volume/mute panel section |
 | `Sources/EQView.swift`, `FrequencyResponseView.swift`, `AutoEQPickerView.swift`, `LevelMeterView.swift` | SwiftUI menu-bar UI |
 | `Prototypes/TapProto/` | Minimal standalone tap validation prototype (kept as reference) |
 
@@ -97,6 +135,40 @@ These cost real debugging time; do not regress them.
    views, never in `EQView`'s body — a body-level read re-diffs the whole
    panel and re-runs AppKit layout 30×/s (~47% CPU). Same family: no blocking
    calls (SMAppService XPC, HAL device enumeration) in any view body.
+10. **Tap create/destroy churn degrades coreaudiod short of a full wedge.**
+    Heavy cycling of tap/aggregate creation (e.g. rapid App Mixer exception
+    add/remove during development) can leave coreaudiod in a state where
+    freshly created aggregates stall (`callbacks=0`) *and* `.mutedWhenTapped`
+    stops muting the tapped process (audible double audio — the original app
+    output plus the processed copy). `sudo killall coreaudiod` recovers this;
+    a full wedge still needs a reboot. Design consequence: reconfigure taps
+    only on explicit user action (the App Mixer exception design), never on
+    app-lifecycle churn (app launch/quit alone must not create/destroy taps).
+11. **TCC attribution requires a recognized GUI launch.** A binary capturing
+    system audio must be launched by a recognized GUI process (e.g.
+    double-clicked or opened via Terminal.app) — a headless/CLI-subprocess
+    launch captures **silence with zero errors**: taps create fine, callbacks
+    flow, buffers are all-zero. If live verification shows callbacks
+    incrementing but everything's silent, check how the process was launched
+    before suspecting the DSP chain.
+12. **SIGTERM skips the "user stopped" persistence path correctly, but
+    `killall` in scripts is still wrong for deploy cycles.** The app's normal
+    termination path (used for both SIGTERM and menu Quit) persists
+    `paraeq.wasRunning=0`, so the next launch won't auto-resume processing —
+    by design, but easy to mistake for a bug when scripting relaunches. Use
+    an AppleScript `quit` (or the Quit menu item) for deploy cycles so the
+    persisted running-state matches what a real user would see.
+13. **`vDSP_biquadm_SetTargetsDouble` argument order.** The signature is
+    `(start_section, start_channel, n_sections, n_channels)` — passing counts
+    in the offset slots compiles and runs with no error but silently updates
+    zero sections. This shipped 2026-07-05 and made every live EQ edit (band
+    drag, same-layout preset switch) a no-op in the running audio, even
+    though the UI and coefficient math were correct; only full chain rebuilds
+    (e.g. changing band count) picked up new coefficients. Fixed on `main` at
+    `0d664eb`. Any future direct use of `vDSP_biquadm_SetTargetsDouble` /
+    `vDSP_biquadm_SetTargets` needs a test that changes one coefficient live
+    and asserts the *audio output* changed, not just that the call returned
+    `noErr`.
 
 ## DSP notes
 
@@ -138,17 +210,18 @@ These cost real debugging time; do not regress them.
 
 ## Testing
 
-`swift test` — 88 tests covering coefficient correctness (center gains, shelf
+`swift test` — 124 tests covering coefficient correctness (center gains, shelf
 asymptotes, crossover slopes/-3 dB/-6 dB points), the vDSP chain end-to-end
 (sine gain, transparency, per-channel independence), limiter behavior (ceiling,
 transparency, crest-factor preservation, transient catching), FIR design
 accuracy, streaming convolution (identity, delay, multi-partition),
 Equalizer APO import/export round-trips, spectrum calibration (0 dBFS sine,
 floor, release), undo-history coalescing, Q↔octave round-trips,
-suggested-band/auto-range placement, balance text entry, and the calibration
+suggested-band/auto-range placement, balance text entry, the calibration
 stack (stimulus level/pinkness/tone isolation, Goertzel detection under
 10 dB-louder noise, block/trial/tone-delta median robustness, ring-buffer
-seams, recommendation math).
+seams, recommendation math), and the App Mixer policy (gain/mute settings,
+exception membership, grace period, slot cap, InputStaging summation).
 
 Live verification: `~/Library/Logs/ParaEQ.log` logs engine starts, device
 changes, and a status line (callback count + peaks) every 10 s while running.

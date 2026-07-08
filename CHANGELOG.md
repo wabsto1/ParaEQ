@@ -26,6 +26,18 @@
   to set balance numerically (landing on exact center by slider was hard).
 - **Sponsor link** in the footer and README (ParaEQ stays free and open
   source; sponsorship is optional).
+- **App Mixer: per-application volume and mute** — a collapsible menu-bar
+  panel section (collapsed by default) lists apps currently playing audio
+  plus any you've adjusted; each row gets a −60…+6 dB volume slider (below
+  ~−59.5 dB shows −∞) and a mute toggle, with adjusted-but-silent apps
+  pinned (✕ to reset) so settings survive the app going quiet or quitting.
+  Under the hood: each adjusted app gets its own process tap excluded from
+  the global tap, all taps sharing one private aggregate; membership changes
+  (an app newly adjusted, or returned to neutral after a 30 s grace period)
+  restart the engine (~50 ms gap, hardware-verified as the only safe path),
+  while slider/mute changes on an already-adjusted app write straight into
+  a preallocated gain slot with no restart and no gap. Capped at 16
+  simultaneously adjusted apps; per-app settings persist across relaunch.
 
 ### Fixed
 - **Panel render performance**: the spectrum/meter updates (30 fps)
@@ -37,6 +49,12 @@
   graph is layered so curve math redraws only on band edits. Panel-open CPU
   dropped from ~47% to ~6%; the intermittent worsening over time (slow XPC
   round-trips) is gone.
+- **Live EQ edits silently doing nothing**: a `vDSP_biquadm_SetTargetsDouble`
+  argument-order bug (counts passed in the offset slots) meant band edits
+  and same-layout preset switches updated zero coefficient sections in the
+  running audio — the UI and graph updated correctly, but the sound didn't
+  change until a full chain rebuild (e.g. a band-count change) happened to
+  occur. Fixed by correcting the argument order.
 
 ## 2.1.0 — 2026-07-05
 
