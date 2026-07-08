@@ -255,14 +255,14 @@ final class AudioEngine {
             measurePtr!.initialize(to: 0)
             appGainPtr = .allocate(capacity: 16)
             appGainPtr!.initialize(repeating: 0, count: 16)
-            for (i, ex) in appExceptions.enumerated() where i < 16 {
-                (appGainPtr! + i).pointee = ex.gainLinear
-            }
             preampLinearPtr = .allocate(capacity: 1)
             if autoPreamp { computeAutoPreamp() }
             preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
 
             let tapFormat = try createTap()
+            for (i, ex) in appExceptions.enumerated() where i < 16 {
+                (appGainPtr! + i).pointee = ex.gainLinear
+            }
             FrequencyResponse.sampleRate = tapFormat.mSampleRate
             guard let eq = BiquadEQ(
                 bandsA: bands,
