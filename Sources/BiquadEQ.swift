@@ -217,8 +217,10 @@ final class BiquadEQ {
         }
         let coeffs = Self.coefficientArray(bandsA: bandsA, bandsB: bandsB,
                                            sections: sections, sampleRate: sampleRate)
+        // Argument order is (start_section, start_channel, n_sections,
+        // n_channels); passing counts in the offset slots updates 0 rows.
         vDSP_biquadm_SetTargetsDouble(setup, coeffs, 0.005, 0.05,
-                                      0, vDSP_Length(sections), 0, vDSP_Length(channels))
+                                      0, 0, vDSP_Length(sections), vDSP_Length(channels))
         return true
     }
 
