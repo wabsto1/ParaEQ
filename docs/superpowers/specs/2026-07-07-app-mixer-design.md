@@ -192,17 +192,38 @@ code, harmless). Both runs: `AudioHardwareCreateProcessTap` and
    result, so the TCC explanation above is a better fit than the respawn
    timing issue (which was real but not the actual blocker here).
 
-**Verdict**: Findings (1) and (2) are consistent with the plan's buffer-order
-assumption (global pair first, then one stereo pair per exception tap) but
-**unconfirmed by content** because no audio ever reached either tap.
-Finding (3), the per-process mute claim, is **unverified** for the same
-reason. This is a BLOCKED outcome per the task instructions — not a
-redesign signal (buffer layout didn't contradict the tap-list-order
-assumption), but the spike did not produce usable evidence for either load-
-bearing claim (a) or (b). Root cause is almost certainly the System Audio
-Recording TCC grant not being obtainable by/attributed to this headless
-CLI process tree. Re-running the same binary from a normal Terminal.app or
-iTerm2 session (so TCC can prompt and attribute the grant to a recognized
-GUI app, then approving System Audio Recording in System Settings →
-Privacy & Security) should be the next step before treating this spike as
-complete.
+**Verdict (superseded — see re-run below)**: the 2026-07-07 evening runs
+were blocked by a machine-wide coreaudiod tap-subsystem wedge (production
+ParaEQ was also stalled at callbacks=0; 11-day uptime; eqMac's HAL driver
+installed). A reboot + eqMac driver removal cleared it.
+
+## Spike re-run findings (2026-07-08, post-reboot) — SUCCESS
+
+Re-ran the same binary, launched via Terminal.app (`osascript … do script`)
+so TCC attributes System Audio Recording correctly; headless launches from
+the CLI process tree still capture silence — a permanent constraint for any
+future automated audio verification. Three runs, all `callbacks≈1963` over
+20 s. The third run used an instrumented build (per-second RMS time series
+per buffer) with ParaEQ quit, one long-lived `afplay -r 0.04 Submarine`
+(tapped + excluded) and a `say` burst from a second process at t≈10 s:
+
+1. **Buffer order confirmed by content**: the `say` burst appears ONLY in
+   buffer[0] (global tap) at t=11–15 s; buffer[1] carries only the slowed
+   submarine's decaying envelope (0.10 → 0.0003 monotonic). Global tap
+   first, one stereo pair per exception tap, in tap-list order — as the
+   plan assumes.
+2. **Per-process capture confirmed**: buffer[1] peak RMS 0.136–0.139 with
+   afplay playing (was 0.0000 pre-reboot).
+3. **Global-tap exclusion confirmed**: buffer[0] does not track buffer[1]'s
+   envelope (t=7–8 s: buf0 0.016–0.020 << buf1 0.042–0.064) — afplay does
+   not leak into the global pair at any gain. Sporadic buffer[0] transients
+   (~0.5 RMS) are other system audio, which is exactly what a global tap
+   carries on a live desktop.
+4. **`.mutedWhenTapped` at-speaker mute for the per-process tap**: not
+   audibly isolated by these runs (production ParaEQ proves the behavior
+   for global taps daily); to be confirmed end-to-end in Task 8 live
+   verification.
+
+Both load-bearing claims (a) buffer order/layout and (b) per-process
+capture with global-pair exclusion are **verified by content**. Task 1
+complete; Task 4 may rely on the two-buffer interleaved-stereo layout.
