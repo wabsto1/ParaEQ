@@ -21,9 +21,14 @@ final class AppAudioDirectory {
     @ObservationIgnored
     private let queue = DispatchQueue(label: "com.paraeq.appdirectory")
     @ObservationIgnored private var started = false
+    // Invariant: refreshWork is accessed on `queue` only — same convention
+    // as `deviceChangeWork` in AudioEngine.swift.
     @ObservationIgnored private var refreshWork: DispatchWorkItem?
-    /// Process objects we have an isRunningOutput listener on.
-    @ObservationIgnored private var listened: Set<AudioObjectID> = []
+    /// Process objects we have an isRunningOutput listener on, and the block
+    /// registered for each — needed to deregister it when the object goes
+    /// away (objectID reuse on a long-running app would otherwise stack a
+    /// second listener block on the same reused ID).
+    @ObservationIgnored private var listened: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
 
     struct ProcessSnapshot: Equatable {
         let objectID: AudioObjectID
@@ -84,7 +89,10 @@ final class AppAudioDirectory {
         AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject), &addr, queue
         ) { [weak self] _, _ in self?.scheduleRefresh() }
-        scheduleRefresh()
+        // scheduleRefresh mutates refreshWork; confine that mutation to
+        // `queue` like every other call site (all of which are HAL listener
+        // callbacks already running on `queue`).
+        queue.async { [weak self] in self?.scheduleRefresh() }
     }
 
     /// Debounce: process lists churn in bursts (app launch spawns helpers).
@@ -107,18 +115,36 @@ final class AppAudioDirectory {
                 objectID: obj, pid: pid,
                 bundleID: Self.bundleID(of: obj),
                 isRunningOutput: Self.isRunningOutput(obj)))
-            if !listened.contains(obj) {
-                listened.insert(obj)
+            if listened[obj] == nil {
                 var addr = AudioObjectPropertyAddress(
                     mSelector: kAudioProcessPropertyIsRunningOutput,
                     mScope: kAudioObjectPropertyScopeGlobal,
                     mElement: kAudioObjectPropertyElementMain)
-                AudioObjectAddPropertyListenerBlock(obj, &addr, queue) {
+                let block: AudioObjectPropertyListenerBlock = {
                     [weak self] _, _ in self?.scheduleRefresh()
                 }
+                listened[obj] = block
+                AudioObjectAddPropertyListenerBlock(obj, &addr, queue, block)
             }
         }
-        listened.formIntersection(objects)
+        // Deregister listeners for process objects that vanished. Required —
+        // not just bookkeeping — because the HAL can reuse an AudioObjectID
+        // once it's been released; without removing the old block first, a
+        // reused ID would end up with two listener blocks firing.
+        let departed = Set(listened.keys).subtracting(objects)
+        if !departed.isEmpty {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyIsRunningOutput,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            for obj in departed {
+                if let block = listened[obj] {
+                    // Ignore OSStatus: the object may already be dead.
+                    _ = AudioObjectRemovePropertyListenerBlock(obj, &addr, queue, block)
+                }
+                listened.removeValue(forKey: obj)
+            }
+        }
         let grouped = Self.group(snapshots, resolve: Self.resolveApp)
         DispatchQueue.main.async { [weak self] in
             guard let self, grouped != self.apps else { return }
