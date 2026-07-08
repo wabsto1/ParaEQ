@@ -85,7 +85,12 @@ private struct AppMixerRow: View {
             Slider(
                 value: Binding(
                     get: { setting.gainDB },
-                    set: { mixer.setGain($0, for: app.bundleID) }),
+                    set: { v in
+                        // Snap sub-dB residue to true 0 since readout rounds to whole dB.
+                        // Without this, the exception never reaches neutral/grace at zero.
+                        let snapped = abs(v) < 0.5 ? 0 : v
+                        mixer.setGain(snapped, for: app.bundleID)
+                    }),
                 in: -60...6)
             .controlSize(.mini)
             .disabled(setting.muted)
