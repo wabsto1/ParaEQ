@@ -7,7 +7,9 @@ CoreAudio/Accelerate engine — no external dependencies.
 
 - Build app bundle: `bash build.sh` → `.build/ParaEQ.app` (signed; required for TCC)
 - Tests: `swift test` (130 DSP/parser/logic tests, no audio hardware needed)
-- Deploy: `ditto .build/ParaEQ.app /Applications/ParaEQ.app` (then relaunch)
+- Deploy: `ditto .build/ParaEQ.app /Applications/ParaEQ.app`, then relaunch.
+  Quit via AppleScript (`tell application "ParaEQ" to quit`), never `killall` —
+  SIGTERM persists "user stopped" so the relaunch won't auto-resume (gotcha 12)
 - Live diagnostics: `~/Library/Logs/ParaEQ.log` (status line every 10 s while running)
 - After every deploy/relaunch, confirm `callbacks=` is increasing in the log:
   rapid quit→relaunch cycles can start a stalled aggregate (silent output;
@@ -39,8 +41,9 @@ listener/teardown/aggregate code.
   body-level read re-renders the whole panel every tick (was 47% CPU). No
   blocking calls (XPC like `SMAppService.status`, HAL device enumeration) in
   any view body; cache in `@State` and refresh on events.
-- MenuBarExtra panels dismiss on sheet presentation and some interactions —
-  multi-step UI (wizards) gets its own `Window` scene.
+- MenuBarExtra panels dismiss on sheet presentation, focus loss, and ANY
+  programmatic AXPress — multi-step UI (wizards) gets its own `Window` scene;
+  UI automation must target the pop-out window (gotcha 15).
 - App Mixer exception-set changes (membership) must go through engine
   restart, never live tap/aggregate mutation; gain-only changes write
   preallocated slots instead.

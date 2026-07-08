@@ -169,6 +169,26 @@ These cost real debugging time; do not regress them.
     `vDSP_biquadm_SetTargets` needs a test that changes one coefficient live
     and asserts the *audio output* changed, not just that the call returned
     `noErr`.
+14. **Debounced work + a high-frequency cancel path = silently dropped work.**
+    The App Mixer's membership-change restart is debounced 0.4 s; the gain-only
+    write path originally *cancelled* the pending item. A slider drag emits one
+    membership tick followed by a burst of gain-only ticks — each cancelled the
+    pending restart, leaving it permanently dead (engine "desired" two
+    exceptions but had zero taps; the mixer was silently non-functional).
+    Pattern to check whenever pairing a debounce with a fast sibling path:
+    can the fast path fire between schedule and deadline, and if so must it
+    leave the pending item alone (usual answer: yes)? No unit test covers this
+    HAL path — verify live via the log (`scheduling restart` must be followed
+    by `restarting for exception set change` within ~0.5 s).
+15. **UI automation of the MenuBarExtra panel is read-only.** Any programmatic
+    `AXPress`/click *inside* the panel dismisses it before the action lands
+    (the popover drops key status). SwiftUI sliders also silently ignore
+    `AXValue` writes. What works: automate the pop-out window (a real
+    `Window` scene, id `"popout"`, opened via the macwindow button in the
+    panel header — an AXPress on that button in the panel does fire before
+    dismissal) and drive sliders with synthesized CGEvent mouse drags
+    (`leftMouseDown`/`Dragged`/`Up`); a drag through the real gesture path
+    exercises bindings, snapping, and debounce exactly like a user.
 
 ## DSP notes
 
