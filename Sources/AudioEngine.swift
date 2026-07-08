@@ -169,9 +169,16 @@ final class AudioEngine {
         FrequencyResponse.logFrequencies(count: 120)
     @ObservationIgnored private var history: EditHistory<EQEditState>!
 
-    /// Desired per-app exceptions (adjusted apps). The *set* (bundleIDs +
-    /// process objects) is baked into taps at start(); gains are live.
+    /// Desired per-app exceptions (adjusted apps) — the DESIRED capped set,
+    /// compared desired-vs-desired by `setAppExceptions`. NOT filtered by
+    /// tap-creation success; a persistently failing tap must not perturb
+    /// this list, or `sameSet` would never settle and every sync would
+    /// restart the engine (C1).
     private(set) var appExceptions: [AppException] = []
+    /// Post-filter: only the exceptions that actually got a tap, in
+    /// tap-creation order. Slot i (appGainPtr, gain-only writes) and
+    /// aggregate tap-list position i+1 both correspond to `realized[i]`.
+    @ObservationIgnored private var realized: [AppException] = []
     @ObservationIgnored private var exceptionTapIDs: [AudioObjectID] = []
     @ObservationIgnored private var exceptionTapUUIDs: [UUID] = []
     @ObservationIgnored private var appGainPtr: UnsafeMutablePointer<Float>?
@@ -200,6 +207,10 @@ final class AudioEngine {
     private let listenerQueue = DispatchQueue(label: "com.paraeq.devicelistener")
     private var deviceChangeWork: DispatchWorkItem?   // accessed on listenerQueue only
     private var activeOutputUID: String?
+    // I1: coalesce membership-change restarts (mirrors deviceChangeWork) —
+    // rapid slider ticks / mute toggles / directory refreshes must not each
+    // trigger their own restart (stalled-aggregate risk); accessed on .main.
+    private var appExceptionRestartWork: DispatchWorkItem?
 
     init() {
         loadState()
@@ -260,7 +271,11 @@ final class AudioEngine {
             preampLinearPtr!.initialize(to: powf(10.0, preamp / 20.0))
 
             let tapFormat = try createTap()
-            for (i, ex) in appExceptions.enumerated() where i < 16 {
+            // Seed by REALIZED order (C1/C2): slot i must line up with the
+            // exception tap actually placed at aggregate position i+1, not
+            // with the desired list (which may include apps whose tap
+            // creation failed).
+            for (i, ex) in realized.enumerated() where i < 16 {
                 (appGainPtr! + i).pointee = ex.gainLinear
             }
             FrequencyResponse.sampleRate = tapFormat.mSampleRate
@@ -364,25 +379,15 @@ final class AudioEngine {
             AudioObjectID(kAudioObjectSystemObject), &addr,
             UInt32(MemoryLayout<pid_t>.size), &pid, &size, &selfProcess))
 
-        var exclude: [AudioObjectID] = selfProcess == kAudioObjectUnknown ? [] : [selfProcess]
-        exclude += appExceptions.flatMap(\.objectIDs)
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: exclude)
-        desc.uuid = UUID()
-        desc.name = "ParaEQ System Tap"
-        desc.isPrivate = true
-        desc.muteBehavior = CATapMuteBehavior.mutedWhenTapped
-        tapUUID = desc.uuid
-
-        let err = AudioHardwareCreateProcessTap(desc, &tapID)
-        guard err == noErr else { throw EngineError.tapDenied(err) }
-
-        // One dedicated tap per excepted app; muted at source, re-injected by
-        // the IOProc at the app's slot gain. Failure tears the tap out of the
-        // exception list rather than failing the whole engine (audio must
-        // keep playing).
+        // One dedicated tap per excepted app FIRST (C2 — must happen before
+        // the global tap's exclusion list is built): muted at source,
+        // re-injected by the IOProc at the app's slot gain. Failure drops
+        // the app from `realized` (not from `appExceptions`, which stays the
+        // desired set — see C1) rather than failing the whole engine (audio
+        // must keep playing).
         exceptionTapIDs = []
         exceptionTapUUIDs = []
-        var kept: [AppException] = []
+        realized = []
         for ex in appExceptions {
             let d = CATapDescription(stereoMixdownOfProcesses: ex.objectIDs)
             d.uuid = UUID()
@@ -393,12 +398,27 @@ final class AudioEngine {
             if AudioHardwareCreateProcessTap(d, &id) == noErr {
                 exceptionTapIDs.append(id)
                 exceptionTapUUIDs.append(d.uuid)
-                kept.append(ex)
+                realized.append(ex)
             } else {
                 EngineLog.log("App mixer: tap for \(ex.bundleID) failed — dropping exception")
             }
         }
-        appExceptions = kept
+
+        // Global tap excludes self + only the REALIZED exceptions (C2): an
+        // app whose dedicated tap failed to create must NOT be excluded
+        // here, or its audio would reach the device un-EQ'd/un-limited at
+        // unity gain with nothing but a log line to show for it.
+        var exclude: [AudioObjectID] = selfProcess == kAudioObjectUnknown ? [] : [selfProcess]
+        exclude += realized.flatMap(\.objectIDs)
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: exclude)
+        desc.uuid = UUID()
+        desc.name = "ParaEQ System Tap"
+        desc.isPrivate = true
+        desc.muteBehavior = CATapMuteBehavior.mutedWhenTapped
+        tapUUID = desc.uuid
+
+        let err = AudioHardwareCreateProcessTap(desc, &tapID)
+        guard err == noErr else { throw EngineError.tapDenied(err) }
 
         var fmt = AudioStreamBasicDescription()
         addr = AudioObjectPropertyAddress(
@@ -747,21 +767,51 @@ final class AudioEngine {
     /// no live tap/aggregate mutation).
     func setAppExceptions(_ new: [AppException]) {
         let capped = Array(new.prefix(16))
+        // M2: this compares the incoming desired set against the previous
+        // desired set (both `capped`/`appExceptions` are desired, never
+        // filtered by tap success — see C1). It relies on AppMixer's stable
+        // adjustOrder emission (tested invariant: gain-only changes don't
+        // reorder); a reorder without a membership change would otherwise
+        // look like a set change and restart needlessly.
         let sameSet = capped.count == appExceptions.count
             && zip(capped, appExceptions).allSatisfy {
                 $0.bundleID == $1.bundleID && $0.objectIDs == $1.objectIDs
             }
         appExceptions = capped
         if sameSet {
+            // Gain-only path: no restart pending or needed for this change.
+            appExceptionRestartWork?.cancel()
+            appExceptionRestartWork = nil
+            // Write by REALIZED index (C1), not desired position — a
+            // failed/dropped tap can make the two lists diverge in count.
+            // For each tap that actually exists, look up its fresh gain by
+            // bundleID in the incoming desired list.
             if let p = appGainPtr {
-                for (i, ex) in capped.enumerated() { (p + i).pointee = ex.gainLinear }
+                for (i, ex) in realized.enumerated() {
+                    guard let match = capped.first(where: { $0.bundleID == ex.bundleID })
+                    else { continue }
+                    (p + i).pointee = match.gainLinear
+                    realized[i].gainLinear = match.gainLinear
+                }
             }
             return
         }
-        if isRunning {
-            EngineLog.log("App mixer: exception set changed (\(capped.map(\.bundleID).joined(separator: ","))) — restarting")
-            restart()
+        guard isRunning else { return }
+        // I1: debounce membership-change restarts — coalesce bursts (e.g.
+        // two resets 0.8 s apart observed live) into one restart instead of
+        // one per sync, guarding against the stalled-aggregate gotcha from
+        // rapid restarts. The work item reads engine state (appExceptions)
+        // at fire time, which already holds the latest desired set, so a
+        // superseded intermediate state is never acted on.
+        EngineLog.log("App mixer: exception set changed (\(capped.map(\.bundleID).joined(separator: ","))) — scheduling restart")
+        appExceptionRestartWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isRunning else { return }
+            EngineLog.log("App mixer: restarting for exception set change")
+            self.restart()
         }
+        appExceptionRestartWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
     // MARK: - Device auto-profiles (preset per output device)
@@ -1036,6 +1086,7 @@ final class AudioEngine {
         for id in exceptionTapIDs { AudioHardwareDestroyProcessTap(id) }
         exceptionTapIDs = []
         exceptionTapUUIDs = []
+        realized = []
         if let p = appGainPtr { p.deallocate(); appGainPtr = nil }
         ioCtx?.release(); ioCtx = nil
         spectrumTap = nil
