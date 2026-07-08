@@ -190,11 +190,20 @@ final class AppMixer {
     }
 
     /// Directory changed (apps appeared/vanished, playback state flipped).
-    func appsChanged() { sync() }
+    /// Must be called on the main thread.
+    func appsChanged() {
+        assert(Thread.isMainThread)
+        sync()
+    }
 
     /// Recompute desired exceptions and push to the engine; reschedule the
     /// grace-expiry resync.
+    ///
+    /// Mutators (setGain, setMuted, reset), appsChanged(), and sync() must
+    /// all be called on the main thread. Grace-period and save work items
+    /// are scheduled on .main to re-enter there.
     private func sync() {
+        assert(Thread.isMainThread)
         let now = Date()
         let apps = directory?.apps ?? []
         engine?.setAppExceptions(desiredExceptions(apps: apps, now: now))
