@@ -303,6 +303,67 @@ final class AppMixerPolicyTests: XCTestCase {
         XCTAssertEqual(during.map(\.bundleID), ["a", "b", "c"])
     }
 
+    // I2: a neutral write (gain snaps to 0, unmuted) for a bundleID with no
+    // existing setting must record nothing — no entry, no grace deadline, no
+    // exception, no persistence pin.
+    func testFirstTouchNeutralCreatesNoException() {
+        let m = AppMixer()
+        m.setGain(0, for: "a")
+        XCTAssertTrue(m.settings.isEmpty)
+        XCTAssertNil(m.nextGraceDeadline(now: t0.addingTimeInterval(1000)))
+        XCTAssertTrue(m.desiredExceptions(apps: [app("a")], now: t0).isEmpty)
+
+        // A neutral MUTE toggle (unmute) on an untouched app is also a
+        // first-touch neutral write and must be equally inert.
+        let m2 = AppMixer()
+        m2.setMuted(false, for: "b")
+        XCTAssertTrue(m2.settings.isEmpty)
+    }
+
+    // A neutral write on an app with an EXISTING non-neutral setting must
+    // keep today's behavior: the entry stays and grace arms.
+    func testNeutralWriteOnExistingSettingStillArmsGrace() {
+        let m = AppMixer()
+        m.setGain(-12, for: "a")
+        m.setGain(0, for: "a")
+        XCTAssertNotNil(m.settings["a"])
+        XCTAssertNotNil(m.nextGraceDeadline(now: Date()))
+    }
+
+    // I4: once a grace deadline expires, a neutral setting must be GC'd —
+    // removed from settings (and graceDeadlines) so it stops pinning a dead
+    // row and stops persisting forever.
+    func testGraceExpiryRemovesNeutralSetting() {
+        let key = "paraeq.appMixer"
+        UserDefaults.standard.removeObject(forKey: key)
+        let m = AppMixer(engine: nil, directory: nil)
+        let base = Date()
+        m.setGain(-12, for: "a")
+        m.setGain(0, for: "a")
+        XCTAssertNotNil(m.settings["a"])
+
+        m.expireGrace(now: base.addingTimeInterval(AppMixer.graceSeconds + 6))
+
+        XCTAssertNil(m.settings["a"])
+        m.savePendingNow()
+        let reloaded = AppMixer(engine: nil, directory: nil)
+        XCTAssertNil(reloaded.settings["a"])
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    // A re-adjustment during grace clears the deadline (existing behavior);
+    // expireGrace must not touch that entry even once "expired" wall-clock
+    // time has passed, since it's no longer neutral.
+    func testGraceExpiryLeavesReadjustedSettingAlone() {
+        let m = AppMixer()
+        let base = Date()
+        m.setGain(-12, for: "a")
+        m.setGain(0, for: "a")
+        m.setGain(-6, for: "a")   // re-adjust during grace: deadline cleared
+        m.expireGrace(now: base.addingTimeInterval(AppMixer.graceSeconds + 6))
+        XCTAssertEqual(m.settings["a"]?.gainDB, -6)
+    }
+
     func testSettingCodableRoundTrip() throws {
         let s = AppMixerSetting(gainDB: -7.5, muted: true)
         let data = try JSONEncoder().encode(["com.x.y": s])

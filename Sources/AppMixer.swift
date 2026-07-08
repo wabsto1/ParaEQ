@@ -1,3 +1,4 @@
+import AppKit
 import CoreAudio
 import Foundation
 import Observation
@@ -69,6 +70,13 @@ final class AppMixer {
         self.init(settings: loaded)
         self.engine = engine
         self.directory = directory
+        // I5: AudioEngine flushes its own debounced save on quit; AppMixer's
+        // 1 s save debounce (scheduleSave) needs the same guard or a
+        // last-second edit before quit is silently lost.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.savePendingNow() }
         // Set onChange BEFORE start(): start() kicks its first refresh via
         // `queue.async` (queue-confined, HAL-backed), which always publishes
         // asynchronously later on .main — never synchronously inside
@@ -112,6 +120,12 @@ final class AppMixer {
     }
 
     private func apply(_ s: AppMixerSetting, for bundleID: String) {
+        // I2: a neutral write for a bundleID with no existing setting is a
+        // no-op — nothing changed, so record nothing (no settings entry, no
+        // grace deadline, no exception, no persistence). A neutral write on
+        // an EXISTING non-neutral setting falls through below unchanged
+        // (entry stays, grace arms) — that's a real return-to-neutral.
+        if s.isNeutral && settings[bundleID] == nil { return }
         settings[bundleID] = s
         if !adjustOrder.contains(bundleID) { adjustOrder.append(bundleID) }
         if s.isNeutral {
@@ -178,6 +192,22 @@ final class AppMixer {
         graceDeadlines.values.filter { $0 > now }.min()
     }
 
+    /// I4: reclaim settings whose grace period has fully elapsed AND are
+    /// still neutral, so a dead row doesn't pin a `settings` entry (and its
+    /// persistence) forever. A setting that was re-adjusted during grace is
+    /// non-neutral and its deadline was already cleared by `apply`, so it's
+    /// never touched here. `now` is a parameter (like `desiredExceptions`)
+    /// so this is directly unit-testable without waiting on the real clock.
+    func expireGrace(now: Date) {
+        for (bundleID, deadline) in graceDeadlines where deadline <= now {
+            graceDeadlines[bundleID] = nil
+            if let s = settings[bundleID], s.isNeutral {
+                settings[bundleID] = nil
+                adjustOrder.removeAll { $0 == bundleID }
+            }
+        }
+    }
+
     // MARK: - Wiring: engine sync, persistence, display list
 
     /// Rows for the UI: apps currently playing audio, plus apps the user has
@@ -220,12 +250,18 @@ final class AppMixer {
     private func sync() {
         assert(Thread.isMainThread)
         let now = Date()
+        expireGrace(now: now)
         let apps = directory?.apps ?? []
         engine?.setAppExceptions(desiredExceptions(apps: apps, now: now))
         graceWork?.cancel()
         if let deadline = nextGraceDeadline(now: now) {
             let work = DispatchWorkItem { [weak self] in self?.sync() }
             graceWork = work
+            // M3: the +0.5 s slack guarantees the work item fires strictly
+            // after `deadline`, so nextGraceDeadline's `$0 > now` filter (and
+            // desiredExceptions' `now < deadline` grace check) has already
+            // tipped over by the time this runs — no repeated near-miss
+            // rescheduling right at the boundary.
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + deadline.timeIntervalSince(now) + 0.5,
                 execute: work)
