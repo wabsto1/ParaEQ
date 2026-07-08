@@ -84,6 +84,37 @@ struct EQBand: Codable, Equatable {
     var qLabel: String { String(format: "%.2f", q) }
 }
 
+// MARK: - Input sanitization
+//
+// Imported and downloaded presets (Equalizer APO text, AutoEQ profiles,
+// persisted JSON) are untrusted input: clamp every parameter into the
+// engine's designed ranges and replace non-finite values before they can
+// reach coefficient math — a NaN gain becomes NaN biquad coefficients.
+
+extension EQBand {
+    static let frequencyRange: ClosedRange<Float> = 10...24000
+    static let gainRange: ClosedRange<Float> = -24...24
+    static let qRange: ClosedRange<Float> = 0.1...30
+    /// Hard cap on bands per channel: bounds the biquad cascade a hostile
+    /// preset file can request (each band is 1–4 sections).
+    static let maxCount = 64
+
+    func sanitized() -> EQBand {
+        var b = self
+        b.frequency = b.frequency.isFinite
+            ? min(max(b.frequency, Self.frequencyRange.lowerBound), Self.frequencyRange.upperBound) : 1000
+        b.gain = b.gain.isFinite
+            ? min(max(b.gain, Self.gainRange.lowerBound), Self.gainRange.upperBound) : 0
+        b.q = b.q.isFinite
+            ? min(max(b.q, Self.qRange.lowerBound), Self.qRange.upperBound) : 1.41
+        return b
+    }
+
+    static func sanitized(_ bands: [EQBand]) -> [EQBand] {
+        bands.prefix(maxCount).map { $0.sanitized() }
+    }
+}
+
 // MARK: - Preset
 
 struct EQPreset: Codable, Identifiable, Equatable {

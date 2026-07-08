@@ -55,6 +55,24 @@ struct AutoEQPickerView: View {
         .task { await loadIndex() }
     }
 
+    /// Download with a hard size cap — these are plain text files, so
+    /// anything oversized is wrong (or hostile) and gets dropped early.
+    private func fetchCapped(_ url: URL, maxBytes: Int) async throws
+        -> (Data, URLResponse) {
+        let (bytes, response) = try await URLSession.shared.bytes(from: url)
+        guard response.expectedContentLength <= Int64(maxBytes) else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+            guard data.count <= maxBytes else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+        }
+        return (data, response)
+    }
+
     private func loadIndex() async {
         status = "Loading database index…"
         // The AutoEq results index lists every profile as a markdown link:
@@ -62,7 +80,7 @@ struct AutoEQPickerView: View {
         let url = URL(string:
             "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/INDEX.md")!
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await fetchCapped(url, maxBytes: 5_000_000)
             guard let text = String(data: data, encoding: .utf8) else { return }
             var seen = Set<String>()
             var found: [Entry] = []
@@ -97,7 +115,7 @@ struct AutoEQPickerView: View {
                 "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
                 + "\(encoded)/\(nameEncoded)%20ParametricEQ.txt")!
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await fetchCapped(url, maxBytes: 65_536)
                 guard (response as? HTTPURLResponse)?.statusCode == 200,
                       let text = String(data: data, encoding: .utf8) else {
                     status = "No parametric profile for this entry"

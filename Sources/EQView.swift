@@ -450,7 +450,11 @@ struct EQView: View {
         panel.allowedContentTypes = [.plainText]
         panel.level = .floating
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? engine.exportEqualizerAPOText().write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try engine.exportEqualizerAPOText().write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            importWarning = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     private var presetSection: some View {

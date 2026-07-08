@@ -22,7 +22,8 @@ enum AutoEQParser {
                       f > 0 else { return nil }
                 return GraphicEQNode(frequency: f, gainDB: g)
             }
-            if !nodes.isEmpty { return nodes }
+            let clean = GraphicEQNode.sanitized(nodes)
+            if !clean.isEmpty { return clean }
         }
         return nil
     }
@@ -52,7 +53,13 @@ enum AutoEQParser {
             bands.append(band)
         }
 
-        return AutoEQResult(preamp: preamp, bands: bands, originalCount: bands.count)
+        // Untrusted input: clamp parameters, drop non-finite values, cap the
+        // band count (a hostile file must not size the biquad cascade).
+        if let p = preamp, !p.isFinite { preamp = nil }
+        if let p = preamp { preamp = min(max(p, -24), 24) }
+        let originalCount = bands.count
+        return AutoEQResult(preamp: preamp, bands: EQBand.sanitized(bands),
+                            originalCount: originalCount)
     }
 
     private static func parseFilterLine(_ line: String) -> EQBand? {

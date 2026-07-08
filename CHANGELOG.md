@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 — 2026-07-08
 
 ### Added
 - **Mic-based headphone balance calibration** (ear icon next to the Bal
@@ -55,6 +55,12 @@
   running audio — the UI and graph updated correctly, but the sound didn't
   change until a full chain rebuild (e.g. a band-count change) happened to
   occur. Fixed by correcting the argument order.
+
+### Release hardening
+- Input validation for imported and downloaded preset files.
+- Release signing entitlements for notarized distribution.
+- Docs: privacy statement, uninstall instructions, FAQ (latency, CPU,
+  permissions), listening-safety notes.
 
 ## 2.1.0 — 2026-07-05
 

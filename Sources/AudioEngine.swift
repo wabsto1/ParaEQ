@@ -18,9 +18,19 @@ enum EngineLog {
         let line = "[\(formatter.string(from: Date()))] \(msg)\n"
         guard let data = line.data(using: .utf8) else { return }
         if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            if (try? handle.seekToEnd()) ?? 0 > 512_000 { return }
+            let size = (try? handle.seekToEnd()) ?? 0
+            if size > 512_000 {
+                // Rotate rather than stop: long sessions must keep logging
+                // (a silent cap discards exactly the diagnostics you need).
+                try? handle.close()
+                let old = url.deletingPathExtension().appendingPathExtension("old.log")
+                try? FileManager.default.removeItem(at: old)
+                try? FileManager.default.moveItem(at: url, to: old)
+                try? data.write(to: url)
+                return
+            }
             handle.write(data)
+            try? handle.close()
         } else {
             try? data.write(to: url)
         }
@@ -289,6 +299,8 @@ final class AudioEngine {
             try createAggregate(outputUID: output.uid)
             try startIO()
             activeOutputUID = output.uid
+            activeSampleRate = tapFormat.mSampleRate
+            installSampleRateListener()
 
             isRunning = true
             errorMessage = nil
@@ -629,6 +641,63 @@ final class AudioEngine {
         }
     }
 
+    // MARK: Sample-rate changes
+    //
+    // Every coefficient in the chain (biquads, FIR design, limiter lookahead,
+    // calibration tone increments) is computed for the start-time rate; if
+    // the device's nominal rate changes mid-stream the whole curve shifts.
+    // Listen on the aggregate (it mirrors the main sub-device clock) and
+    // restart when the rate actually differs.
+
+    private var activeSampleRate: Double = 0
+    private var rateListenerBlock: AudioObjectPropertyListenerBlock?
+
+    private var nominalRateAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+    }
+
+    private func installSampleRateListener() {
+        guard aggregateID != kAudioObjectUnknown, rateListenerBlock == nil else { return }
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleSampleRateChange()
+        }
+        var addr = nominalRateAddress
+        AudioObjectAddPropertyListenerBlock(aggregateID, &addr, listenerQueue, block)
+        rateListenerBlock = block
+    }
+
+    private func removeSampleRateListener() {
+        guard let block = rateListenerBlock, aggregateID != kAudioObjectUnknown else {
+            rateListenerBlock = nil
+            return
+        }
+        var addr = nominalRateAddress
+        AudioObjectRemovePropertyListenerBlock(aggregateID, &addr, listenerQueue, block)
+        rateListenerBlock = nil
+    }
+
+    /// Runs on `listenerQueue` (never blocks it — the read is a plain
+    /// property get, and the restart hops to main).
+    private func handleSampleRateChange() {
+        let device = aggregateID
+        guard device != kAudioObjectUnknown else { return }
+        var rate: Double = 0
+        var size = UInt32(MemoryLayout<Double>.size)
+        var addr = nominalRateAddress
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &rate) == noErr
+        else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isRunning, rate > 0,
+                  abs(rate - self.activeSampleRate) > 0.5 else { return }
+            EngineLog.log(String(format: "Nominal rate changed %.0f → %.0f Hz; restarting",
+                                 self.activeSampleRate, rate))
+            self.restart()
+        }
+    }
+
     /// Runs on `listenerQueue`. Debounces the burst of property changes a
     /// device switch produces, then evaluates on the main thread.
     private func scheduleDeviceChangeCheck() {
@@ -874,7 +943,10 @@ final class AudioEngine {
     }
 
     func setGraphicEQ(_ nodes: [GraphicEQNode]?) {
-        graphicEQNodes = nodes
+        // Nodes arrive from imported text or persisted JSON — sanitize here
+        // so every path is covered before FIR design.
+        let clean = nodes.map(GraphicEQNode.sanitized)
+        graphicEQNodes = (clean?.isEmpty ?? true) ? nil : clean
         if isRunning { restart() }
         scheduleSave()
     }
@@ -911,13 +983,16 @@ final class AudioEngine {
 
     func applyPreset(_ preset: EQPreset) {
         guard !preset.bands.isEmpty else { return }
-        let countChanged = preset.bands.count != bands.count
-            || (channelMode != .linked && preset.bands.count != bandsB.count)
-        bands = preset.bands
-        bandsB = preset.bands
-        if let p = preset.preamp {
+        // Presets can come from imported files, the AutoEQ browser, or
+        // persisted JSON — sanitize before anything reaches coefficient math.
+        let newBands = EQBand.sanitized(preset.bands)
+        let countChanged = newBands.count != bands.count
+            || (channelMode != .linked && newBands.count != bandsB.count)
+        bands = newBands
+        bandsB = newBands
+        if let p = preset.preamp, p.isFinite {
             autoPreamp = false
-            setPreamp(p)
+            setPreamp(min(max(p, -24), 24))
         }
         bandStructureChanged(countChanged: countChanged)
     }
@@ -1054,7 +1129,9 @@ final class AudioEngine {
 
     private func startMeterTimer() {
         meterTicks = 0
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // .common keeps meters/spectrum updating during menu tracking and
+        // slider drags (.default-only timers pause in those run-loop modes).
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self, let lp = self.peakLPtr, let rp = self.peakRPtr else { return }
             let rawL = lp.pointee; lp.pointee = 0
             let rawR = rp.pointee; rp.pointee = 0
@@ -1077,11 +1154,14 @@ final class AudioEngine {
                                      self.appExceptions.count))
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        meterTimer = timer
     }
 
     // MARK: - Teardown
 
     private func teardown() {
+        removeSampleRateListener()
         if aggregateID != kAudioObjectUnknown {
             if let procID {
                 AudioDeviceStop(aggregateID, procID)

@@ -237,6 +237,71 @@ final class AutoEQParserTests: XCTestCase {
         """
         XCTAssertEqual(AutoEQParser.parse(text).bands.count, 1)
     }
+
+    // MARK: Untrusted-input sanitization
+
+    func testNonFiniteValuesAreReplaced() {
+        let text = """
+        Preamp: nan dB
+        Filter 1: ON PK Fc inf Hz Gain nan dB Q -inf
+        """
+        let result = AutoEQParser.parse(text)
+        XCTAssertNil(result.preamp, "non-finite preamp must be dropped")
+        XCTAssertEqual(result.bands.count, 1)
+        let b = result.bands[0]
+        XCTAssertTrue(b.frequency.isFinite && b.gain.isFinite && b.q.isFinite)
+        XCTAssertEqual(b.gain, 0, "NaN gain falls back to flat")
+    }
+
+    func testOutOfRangeValuesAreClamped() {
+        let text = "Filter 1: ON PK Fc 999999 Hz Gain 999 dB Q 5000"
+        let b = AutoEQParser.parse(text).bands[0]
+        XCTAssertEqual(b.frequency, EQBand.frequencyRange.upperBound)
+        XCTAssertEqual(b.gain, EQBand.gainRange.upperBound)
+        XCTAssertEqual(b.q, EQBand.qRange.upperBound)
+    }
+
+    func testBandCountIsCapped() {
+        let lines = (1...500).map {
+            "Filter \($0): ON PK Fc 1000 Hz Gain 1.0 dB Q 1.00"
+        }
+        let result = AutoEQParser.parse(lines.joined(separator: "\n"))
+        XCTAssertEqual(result.bands.count, EQBand.maxCount,
+                       "hostile files must not size the biquad cascade")
+        XCTAssertEqual(result.originalCount, 500)
+    }
+
+    func testZeroOctaveBandwidthYieldsFiniteQ() {
+        let text = "Filter 1: ON PK Fc 1000 Hz Gain 3.0 dB BW Oct 0"
+        let b = AutoEQParser.parse(text).bands[0]
+        XCTAssertTrue(b.q.isFinite, "BW Oct 0 divides by zero → must be sanitized")
+        XCTAssertTrue(EQBand.qRange.contains(b.q))
+    }
+
+    func testHugePreampIsClamped() {
+        let result = AutoEQParser.parse("Preamp: -400 dB\nFilter 1: ON PK Fc 100 Hz Gain 1 dB Q 1")
+        XCTAssertEqual(result.preamp, -24)
+    }
+}
+
+final class GraphicEQSanitizationTests: XCTestCase {
+    func testNodeCountIsCapped() {
+        let body = (1...2000).map { "\($0) 1.0" }.joined(separator: "; ")
+        let nodes = AutoEQParser.parseGraphicEQ("GraphicEQ: " + body)
+        XCTAssertEqual(nodes?.count, 512, "FIR design cost must stay bounded")
+    }
+
+    func testNonFiniteNodesAreDropped() {
+        let nodes = AutoEQParser.parseGraphicEQ("GraphicEQ: nan 3.0; 100 nan; 1000 2.0")
+        XCTAssertEqual(nodes?.count, 1)
+        XCTAssertEqual(nodes?[0].frequency, 1000)
+    }
+
+    func testNodeGainIsClamped() {
+        let nodes = AutoEQParser.parseGraphicEQ("GraphicEQ: 100 400; 1000 -400")
+        XCTAssertEqual(nodes?[0].gainDB, 48)
+        XCTAssertEqual(nodes?[1].gainDB, -48)
+    }
 }
 
 final class BandLayoutTests: XCTestCase {
@@ -408,6 +473,16 @@ final class LimiterTests: XCTestCase {
         let out = run(limiter, input: input)
         XCTAssertLessThanOrEqual(out.map { abs($0) }.max()!, 0.9851,
                                  "lookahead catches single-sample transient")
+    }
+
+    func testNaNNeverReachesOutput() {
+        // NaN fails every ordered comparison, so a plain >/< clamp passes it
+        // straight to the DAC — the limiter must scrub it explicitly.
+        let limiter = Limiter(sampleRate: 48000, ceiling: 0.985)
+        var input = [Float](repeating: 0.5, count: 1000)
+        input[500] = .nan
+        let out = run(limiter, input: input)
+        XCTAssertTrue(out.allSatisfy { $0.isFinite }, "NaN must not reach the output")
     }
 }
 

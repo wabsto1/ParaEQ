@@ -40,6 +40,14 @@ until these repository secrets are configured:
 Local releases: one-time `xcrun notarytool store-credentials paraeq-notary …`,
 then `scripts/release.sh "Developer ID Application: Your Name (TEAMID)"`.
 
+## Development process
+
+ParaEQ is developed with heavy AI assistance (Claude). Contributions — human
+or AI-assisted — are welcome; what matters is the same bar for everything
+that lands: every DSP change needs a unit test in `Tests/ParaEQTests`, and
+engine changes must be verified live on hardware via
+`~/Library/Logs/ParaEQ.log` (details under Ground rules below).
+
 ## Ground rules
 
 - Read `docs/ARCHITECTURE.md` first — especially the "Hard-won platform

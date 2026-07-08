@@ -7,10 +7,15 @@
 - macOS 14.4 (Sonoma) or later. No drivers or other software — ParaEQ uses
   Apple's built-in system-audio capture API.
 
-### Build and install
+### Install
 
-ParaEQ is distributed as source. With Xcode command-line tools installed
-(`xcode-select --install`):
+Download `ParaEQ.zip` from the
+[Releases page](https://github.com/wabsto1/ParaEQ/releases), unzip, and drag
+ParaEQ to Applications.
+
+### Build from source (alternative)
+
+With Xcode command-line tools installed (`xcode-select --install`):
 
 ```bash
 git clone https://github.com/wabsto1/ParaEQ.git
@@ -25,13 +30,21 @@ main window.
 
 ### First run and permissions
 
+Nothing changes until you press Start. macOS labels any system-audio capture
+"recording" — ParaEQ only passes audio through its filters in real time, and
+nothing is written to disk.
+
 1. Click the menu-bar icon, then click **Start**.
 2. macOS asks for permission to record system audio ("ParaEQ would like to
    record system audio"). Click **Allow**. This is the only permission ParaEQ
    needs; you can review it later under **System Settings → Privacy &
-   Security → Screen & System Audio Recording**.
+   Security → Screen & System Audio Recording**. (The optional balance
+   calibration separately asks for microphone access on first use.)
 3. Audio now flows through the EQ. Press **Stop** at any time to return to
    unprocessed audio.
+
+If you clicked **Deny**, enable ParaEQ under **System Settings → Privacy &
+Security → Screen & System Audio Recording**, then quit and relaunch.
 
 If you build from source repeatedly, see the signing note in
 [CONTRIBUTING.md](../CONTRIBUTING.md) — with plain ad-hoc signing macOS
@@ -204,13 +217,23 @@ presets in menu order.
 ## GraphicEQ and convolution
 
 - Importing an AutoEQ **GraphicEQ** profile activates a FIR filter stage shown
-  in the **FIR** row (rendered as a minimum-phase filter — no audible
-  latency). Click ✕ to remove it.
+  in the **FIR** row (rendered as a minimum-phase filter — no pre-ringing).
+  Click ✕ to remove it.
 - **Load IR…** loads an impulse-response audio file (WAV/AIFF/…, mono or
   stereo, any sample rate — it's resampled automatically). Use this for room
-  correction filters, headphone target IRs, etc. The FIR stage adds ~11 ms of
-  latency — fine for music, noticeable for gaming.
+  correction filters, headphone target IRs, etc.
 - The FIR stage runs *in addition to* the parametric bands.
+
+### Latency
+
+The lookahead limiter adds a fixed 5 ms to everything. GraphicEQ and IR
+convolution both run through the FIR stage, which processes in 512-sample
+blocks — about 10.7 ms more at 48 kHz. Normal device buffering applies on
+top in every case. In total: roughly 5–10 ms for parametric EQ alone,
+~16–21 ms with GraphicEQ or an IR loaded — inaudible for music, fine for
+video, may matter for rhythm games. The parametric-only path has no FIR
+stage; it only exists while a GraphicEQ curve or IR is loaded. Bluetooth
+devices add their own codec latency independently of ParaEQ.
 
 ## Limiter
 
@@ -218,6 +241,19 @@ A lookahead limiter (not a clipper) protects the output: transients are caught
 before they clip, and steady content is transparent below the ceiling. With
 **Auto preamp** on you will rarely engage it; it exists as a safety net for
 manual preamp settings and IR filters.
+
+## Listening safely
+
+- **Turn the volume down before applying large boosts or unfamiliar
+  presets.** An EQ boost is a real level increase — +6 dB at a frequency is
+  double the amplitude there, at whatever volume you were already playing.
+- **Keep Auto preamp on** unless you know why you're disabling it. With it
+  off, large boosts drive the limiter into constant engagement, which is
+  audible as pumping.
+- **The limiter prevents digital clipping, not loud output.** A clean,
+  unclipped signal can still be far too loud.
+- ±24 dB of boost is enough to damage hearing — or tweeters — at high
+  volume. Approach large boosts from low volume, not the other way around.
 
 ## Reference: terms and filter types
 
@@ -319,7 +355,8 @@ Q-adjustable Low/High Pass types are usually all you need.
   applies that fingerprint to audio. Room-correction packages and headphone
   target simulations ship as IR files; **Load IR…** applies them. *Minimum
   phase* (used for GraphicEQ) means the filter is arranged to respond as early
-  as possible, keeping latency near zero.
+  as possible, with no pre-ringing (the FIR stage itself still adds ~11 ms —
+  see [Latency](#latency)).
 - **Peak meter / dBFS** — the bars show the post-limiter peak level per
   channel. Digital audio clips at full scale (0 dBFS); the limiter's ceiling
   sits just below it.
@@ -343,6 +380,25 @@ Q-adjustable Low/High Pass types are usually all you need.
   device changes, and a status line every 10 seconds while running (callback
   count and peak levels). Include it when reporting issues.
 - **Some audio is unaffected** — apps using exclusive-mode device access
-  bypass the system mix (rare on macOS; some pro-audio apps).
+  bypass the system mix (rare on macOS; some pro-audio apps). Other apps that
+  themselves use process taps, and some DRM-protected playback paths, can
+  also route around the capture.
 - **Balanced but shifted volume after big boosts** — that's auto-preamp
   compensating; the overall loudness drop equals your largest boost.
+
+## Uninstalling
+
+Quit ParaEQ — its private audio device and process taps are removed the
+moment it stops; nothing is installed system-wide — then delete
+`/Applications/ParaEQ.app`. No drivers, kernel extensions, launch daemons,
+or helpers are ever installed. If the app crashes, coreaudiod reclaims the
+tap and aggregate automatically and system audio continues on the normal
+output.
+
+Optional leftovers you can remove:
+
+- Settings: `defaults delete com.paraeq.app`
+- Diagnostic log: `~/Library/Logs/ParaEQ.log`
+- Permission entries under **System Settings → Privacy & Security**
+  (Screen & System Audio Recording, and Microphone if you used balance
+  calibration)

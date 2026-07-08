@@ -29,8 +29,21 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/ParaEQ "$APP/Contents/MacOS/"
 cp Info.plist "$APP/Contents/"
 
+# Stamp the bundle version from the release tag (VERSION env in CI, latest
+# tag locally) so the shipped app reports its real version.
+VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || true)}"
+if [[ -n "$VERSION" ]]; then
+    V="${VERSION#v}"
+    echo "==> Stamping version $V"
+    plutil -replace CFBundleShortVersionString -string "$V" "$APP/Contents/Info.plist"
+    plutil -replace CFBundleVersion -string "$V" "$APP/Contents/Info.plist"
+fi
+
 echo "==> Signing (hardened runtime)"
-codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+# The entitlements file is required: hardened runtime denies audio input
+# (tap + calibration mic) without com.apple.security.device.audio-input.
+codesign --force --options runtime --timestamp \
+    --entitlements ParaEQ.entitlements --sign "$IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 echo "==> Notarizing"
@@ -53,3 +66,4 @@ echo "==> Packaging stapled app"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 echo "Release artifact: $ZIP"
+shasum -a 256 "$ZIP"

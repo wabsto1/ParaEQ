@@ -38,7 +38,7 @@ pipeline. Each app the user adjusts (an "exception") gets its **own** process
 tap (`.mutedWhenTapped`, `stereoMixdownOfProcesses: [pid]`) and is excluded
 from the global tap's process list; the global tap and every exception tap all
 live in the **one** private aggregate, so there is still a single IOProc.
-Hardware-verified by the Task 1 spike: each tap arrives as its own
+Hardware-verified with a standalone spike (`Prototypes/MultiTapSpike`): each tap arrives as its own
 interleaved-stereo input buffer on the IOProc callback, in tap-list order with
 the global tap first.
 
@@ -230,7 +230,7 @@ These cost real debugging time; do not regress them.
 
 ## Testing
 
-`swift test` — 130 tests covering coefficient correctness (center gains, shelf
+`swift test` — 130+ tests covering coefficient correctness (center gains, shelf
 asymptotes, crossover slopes/-3 dB/-6 dB points), the vDSP chain end-to-end
 (sine gain, transparency, per-channel independence), limiter behavior (ceiling,
 transparency, crest-factor preservation, transient catching), FIR design

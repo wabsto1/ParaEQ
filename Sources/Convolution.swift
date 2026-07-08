@@ -6,6 +6,18 @@ import Foundation
 struct GraphicEQNode: Codable, Equatable {
     var frequency: Float
     var gainDB: Float
+
+    /// Node lists come from untrusted text (imports, downloads, persisted
+    /// JSON): drop non-finite values, clamp ranges, cap the count — the FIR
+    /// design cost and `exp()` in the cepstral step must stay bounded.
+    static func sanitized(_ nodes: [GraphicEQNode]) -> [GraphicEQNode] {
+        nodes.prefix(512).compactMap { n in
+            guard n.frequency.isFinite, n.gainDB.isFinite, n.frequency > 0
+            else { return nil }
+            return GraphicEQNode(frequency: min(n.frequency, 24000),
+                                 gainDB: min(max(n.gainDB, -48), 48))
+        }
+    }
 }
 
 // MARK: - Minimum-phase FIR design (cepstral method)
@@ -20,7 +32,13 @@ enum MinPhaseFIR {
 
     /// dB gain at `freq` from log-frequency linear interpolation of nodes.
     static func targetGainDB(nodes: [GraphicEQNode], atFrequency freq: Double) -> Double {
-        let sorted = nodes.sorted { $0.frequency < $1.frequency }
+        targetGainDB(sortedNodes: nodes.sorted { $0.frequency < $1.frequency },
+                     atFrequency: freq)
+    }
+
+    /// Same, for callers that evaluate many frequencies: sort once, not per call.
+    static func targetGainDB(sortedNodes sorted: [GraphicEQNode],
+                             atFrequency freq: Double) -> Double {
         guard let first = sorted.first, let last = sorted.last else { return 0 }
         if freq <= Double(first.frequency) { return Double(first.gainDB) }
         if freq >= Double(last.frequency) { return Double(last.gainDB) }
@@ -47,10 +65,11 @@ enum MinPhaseFIR {
         defer { vDSP_destroy_fftsetupD(setup) }
 
         // 1. Target log-magnitude on the FFT grid (Hermitian-symmetric).
+        let sorted = nodes.sorted { $0.frequency < $1.frequency }
         var logMag = [Double](repeating: 0, count: n)
         for k in 0...(n / 2) {
             let freq = Double(k) * sampleRate / Double(n)
-            let dB = targetGainDB(nodes: nodes, atFrequency: max(freq, 1.0))
+            let dB = targetGainDB(sortedNodes: sorted, atFrequency: max(freq, 1.0))
             let lm = dB * log(10.0) / 20.0      // ln of linear magnitude
             logMag[k] = lm
             if k > 0 && k < n / 2 { logMag[n - k] = lm }

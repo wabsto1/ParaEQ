@@ -86,11 +86,12 @@ final class Limiter {
                 envelope += releaseCoef * (windowMin - envelope)
             }
 
-            // Delayed audio × gain (+ hard safety clamp)
+            // Delayed audio × gain (+ hard safety clamp; NaN fails both
+            // comparisons, so it needs its own branch or it reaches the DAC)
             var outL = delayL[delayIdx] * envelope
             var outR = delayR[delayIdx] * envelope
-            if outL > 1.0 { outL = 1.0 } else if outL < -1.0 { outL = -1.0 }
-            if outR > 1.0 { outR = 1.0 } else if outR < -1.0 { outR = -1.0 }
+            if outL > 1.0 { outL = 1.0 } else if outL < -1.0 { outL = -1.0 } else if outL.isNaN { outL = 0 }
+            if outR > 1.0 { outR = 1.0 } else if outR < -1.0 { outR = -1.0 } else if outR.isNaN { outR = 0 }
             delayL[delayIdx] = inL
             delayR[delayIdx] = inR
             delayIdx = (delayIdx + 1) % lookahead

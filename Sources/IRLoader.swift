@@ -13,6 +13,11 @@ enum IRLoader {
                      maxTaps: Int = 131_072) throws -> [[Float]] {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
+        // Only 1–2 channels are ever used; a hostile header claiming
+        // hundreds of channels would multiply the read-buffer allocation.
+        guard format.channelCount >= 1, format.channelCount <= 8 else {
+            throw LoadError("Unsupported channel count (\(format.channelCount))")
+        }
         let frames = AVAudioFrameCount(min(file.length, 2_000_000))
         guard frames > 0,
               let readBuf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {

@@ -171,6 +171,12 @@ final class BiquadEQ {
     private let channels = 2
     let sampleRate: Double
 
+    // Preallocated channel-pointer tables for vDSP_biquadm — building Swift
+    // array literals in process() would malloc on the audio thread.
+    private let inPtrs: UnsafeMutablePointer<UnsafePointer<Float>>
+    private let outPtrs: UnsafeMutablePointer<UnsafeMutablePointer<Float>>
+    private let ptrScratch: UnsafeMutablePointer<Float>
+
     /// Total biquad sections a band set needs (crossover types expand to
     /// multi-stage cascades).
     static func sectionCount(for bands: [EQBand], sampleRate: Double) -> Int {
@@ -195,6 +201,12 @@ final class BiquadEQ {
         guard let setup = vDSP_biquadm_CreateSetup(
             coeffs, vDSP_Length(sections), vDSP_Length(channels)) else { return nil }
         self.setup = setup
+        ptrScratch = .allocate(capacity: 1)
+        ptrScratch.initialize(to: 0)
+        inPtrs = .allocate(capacity: channels)
+        inPtrs.initialize(repeating: UnsafePointer(ptrScratch), count: channels)
+        outPtrs = .allocate(capacity: channels)
+        outPtrs.initialize(repeating: ptrScratch, count: channels)
     }
 
     convenience init?(bands: [EQBand], sampleRate: Double) {
@@ -203,6 +215,9 @@ final class BiquadEQ {
 
     deinit {
         vDSP_biquadm_DestroySetup(setup)
+        inPtrs.deallocate()
+        outPtrs.deallocate()
+        ptrScratch.deallocate()
     }
 
     /// Glitch-free live update; safe to call from the main thread while the
@@ -233,14 +248,11 @@ final class BiquadEQ {
     func process(inL: UnsafePointer<Float>, inR: UnsafePointer<Float>,
                  outL: UnsafeMutablePointer<Float>, outR: UnsafeMutablePointer<Float>,
                  frames: Int) {
-        var inputs: [UnsafePointer<Float>] = [inL, inR]
-        var outputs: [UnsafeMutablePointer<Float>] = [outL, outR]
-        inputs.withUnsafeMutableBufferPointer { inPtr in
-            outputs.withUnsafeMutableBufferPointer { outPtr in
-                vDSP_biquadm(setup, inPtr.baseAddress!, 1,
-                             outPtr.baseAddress!, 1, vDSP_Length(frames))
-            }
-        }
+        inPtrs[0] = inL
+        inPtrs[1] = inR
+        outPtrs[0] = outL
+        outPtrs[1] = outR
+        vDSP_biquadm(setup, inPtrs, 1, outPtrs, 1, vDSP_Length(frames))
     }
 
     /// 5 doubles per section per channel: [b0 b1 b2 a1 a2]. Cascade stages
