@@ -129,7 +129,12 @@ These cost real debugging time; do not regress them.
    immediate in-process restart stayed dead, while relaunching after ~45 s
    recovered. The engine runs a 5 s start watchdog (`scheduleStartWatchdog`)
    that restarts once and then surfaces an error; when developing, leave a
-   pause between deploy cycles.
+   pause between deploy cycles. Nuance observed 2026-07-08: after churn the
+   stall can be a *slow start* rather than a dead one — callbacks arrived
+   seconds after the watchdog's "giving up" log line, and a quit → ~50 s
+   wait → relaunch cycle also produced one watchdog restart before a start
+   that then took a further ~5 s to deliver its first callback. Treat
+   "giving up" as "check the next status lines", not as a verdict.
 9. **UI observation isolation.** Any `@Observable` engine property mutated by
    the 30 fps meter timer (peaks, spectrum) must be read only in small leaf
    views, never in `EQView`'s body — a body-level read re-diffs the whole
