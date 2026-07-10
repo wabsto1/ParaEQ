@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.0 — 2026-07-09
 
 ### Changed
 - **Balance calibration is now hands-free**: measurements start
