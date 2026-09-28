@@ -430,6 +430,8 @@ struct EQView: View {
         guard let preset = presetManager.allPresets.first(where: { $0.id == selectedPresetID })
         else { return false }
         return engine.bands != preset.bands
+            || (preset.bandsB != nil && engine.bandsB != preset.bandsB)
+            || engine.channelMode != (preset.channelMode ?? .linked)
     }
 
     private var isPinnedToCurrentDevice: Bool {
@@ -506,7 +508,11 @@ struct EQView: View {
                             let name = newPresetName.trimmingCharacters(in: .whitespaces)
                             guard !name.isEmpty else { return }
                             let preampVal: Float? = engine.autoPreamp ? nil : engine.preamp
-                            presetManager.save(name: name, bands: engine.activeBands, preamp: preampVal)
+                            presetManager.save(
+                                name: name, bands: engine.bands, preamp: preampVal,
+                                bandsB: engine.channelMode == .linked ? nil : engine.bandsB,
+                                channelMode: engine.channelMode == .linked ? nil : engine.channelMode
+                            )
                             selectedPresetID = presetManager.customPresets.last!.id
                             showingSavePopover = false
                         }
