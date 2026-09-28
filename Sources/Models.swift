@@ -122,6 +122,8 @@ struct EQPreset: Codable, Identifiable, Equatable {
     var name: String
     var bands: [EQBand]
     var preamp: Float?
+    var bandsB: [EQBand]? = nil
+    var channelMode: ChannelMode? = nil
 
     var isBuiltIn: Bool {
         Self.builtIn.contains { $0.id == id }

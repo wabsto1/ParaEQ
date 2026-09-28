@@ -13,12 +13,15 @@ final class PresetManager {
         loadPresets()
     }
 
-    func save(name: String, bands: [EQBand], preamp: Float?) {
+    func save(name: String, bands: [EQBand], preamp: Float?,
+              bandsB: [EQBand]? = nil, channelMode: ChannelMode? = nil) {
         let preset = EQPreset(
             id: UUID().uuidString,
             name: name,
             bands: bands,
-            preamp: preamp
+            preamp: preamp,
+            bandsB: bandsB,
+            channelMode: channelMode
         )
         customPresets.append(preset)
         persistPresets()

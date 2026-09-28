@@ -230,3 +230,41 @@ final class BalanceEntryTests: XCTestCase {
         }
     }
 }
+
+final class StereoPresetTests: XCTestCase {
+
+    func testPairSurvivesSaveAndReload() throws {
+        let left = [EQBand(frequency: 250, gain: 3)]
+        let right = [EQBand(frequency: 4000, gain: -5)]
+        let manager = PresetManager()
+        manager.save(name: "Stereo test", bands: left, preamp: nil,
+                     bandsB: right, channelMode: .stereo)
+        let saved = try XCTUnwrap(manager.customPresets.last)
+        defer { manager.delete(saved) }
+
+        let decoded = try JSONDecoder().decode(
+            EQPreset.self, from: JSONEncoder().encode(saved))
+        let engine = AudioEngine()
+        engine.applyPreset(decoded)
+        XCTAssertEqual(engine.channelMode, .stereo)
+        XCTAssertEqual(engine.bands, left)
+        XCTAssertEqual(engine.bandsB, right)
+    }
+
+    func testSingleCurveReturnsToLinkedMode() {
+        let engine = AudioEngine()
+        engine.setChannelMode(.stereo)
+        let curve = [EQBand(frequency: 1000, gain: 2)]
+        engine.applyPreset(EQPreset(id: "single", name: "Single", bands: curve))
+        XCTAssertEqual(engine.channelMode, .linked)
+        XCTAssertEqual(engine.bands, curve)
+        XCTAssertEqual(engine.bandsB, curve)
+    }
+
+    func testLegacyJSONDecodesWithoutPairFields() throws {
+        let json = #"{"id":"legacy","name":"Legacy","bands":[]}"#.data(using: .utf8)!
+        let preset = try JSONDecoder().decode(EQPreset.self, from: json)
+        XCTAssertNil(preset.bandsB)
+        XCTAssertNil(preset.channelMode)
+    }
+}

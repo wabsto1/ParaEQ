@@ -256,9 +256,7 @@ final class AudioEngine {
             if let pid = deviceProfile(forUID: output.uid), pid != lastAutoProfileID,
                let preset = presetLookup?(pid) {
                 lastAutoProfileID = pid
-                bands = preset.bands
-                bandsB = preset.bands
-                if let p = preset.preamp { autoPreamp = false; preamp = p }
+                applyPreset(preset)
                 EngineLog.log("Applied device profile preset '\(preset.name)'")
             }
 
@@ -986,10 +984,16 @@ final class AudioEngine {
         // Presets can come from imported files, the AutoEQ browser, or
         // persisted JSON — sanitize before anything reaches coefficient math.
         let newBands = EQBand.sanitized(preset.bands)
+        let newMode = preset.bandsB?.isEmpty == false
+            ? (preset.channelMode ?? .linked) : .linked
+        let newBandsB = newMode == .linked ? newBands : EQBand.sanitized(preset.bandsB!)
         let countChanged = newBands.count != bands.count
-            || (channelMode != .linked && newBands.count != bandsB.count)
+            || (newMode != .linked && newBandsB.count != bandsB.count)
+            || newMode != channelMode
         bands = newBands
-        bandsB = newBands
+        bandsB = newBandsB
+        channelMode = newMode
+        editingB = false
         if let p = preset.preamp, p.isFinite {
             autoPreamp = false
             setPreamp(min(max(p, -24), 24))
