@@ -495,23 +495,27 @@ struct EQView: View {
             .buttonStyle(.borderless)
             .helpHint("Save the current curve as a preset")
             .popover(isPresented: $showingSavePopover) {
+                let name = newPresetName.trimmingCharacters(in: .whitespaces)
+                let replacing = presetManager.customPresets.contains { $0.name == name }
                 VStack(spacing: 8) {
                     Text("Save Preset").font(.headline)
                     TextField("Name", text: $newPresetName)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 180)
+                    if replacing {
+                        Text("Replace existing preset?")
+                    }
                     HStack {
                         Button("Cancel") { showingSavePopover = false }
-                        Button("Save") {
-                            let name = newPresetName.trimmingCharacters(in: .whitespaces)
+                        Button(replacing ? "Replace" : "Save") {
                             guard !name.isEmpty else { return }
                             let preampVal: Float? = engine.autoPreamp ? nil : engine.preamp
-                            presetManager.save(name: name, bands: engine.activeBands, preamp: preampVal)
-                            selectedPresetID = presetManager.customPresets.last!.id
+                            let saved = presetManager.save(name: name, bands: engine.activeBands, preamp: preampVal)
+                            selectedPresetID = saved.id
                             showingSavePopover = false
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(newPresetName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(name.isEmpty)
                     }
                 }
                 .padding()
