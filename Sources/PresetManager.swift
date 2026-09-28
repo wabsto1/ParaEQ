@@ -13,15 +13,22 @@ final class PresetManager {
         loadPresets()
     }
 
-    func save(name: String, bands: [EQBand], preamp: Float?) {
+    @discardableResult
+    func save(name: String, bands: [EQBand], preamp: Float?) -> EQPreset {
+        let index = customPresets.firstIndex { $0.name == name }
         let preset = EQPreset(
-            id: UUID().uuidString,
+            id: index.map { customPresets[$0].id } ?? UUID().uuidString,
             name: name,
             bands: bands,
             preamp: preamp
         )
-        customPresets.append(preset)
+        if let index {
+            customPresets[index] = preset
+        } else {
+            customPresets.append(preset)
+        }
         persistPresets()
+        return preset
     }
 
     func delete(_ preset: EQPreset) {

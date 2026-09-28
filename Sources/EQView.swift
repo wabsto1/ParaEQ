@@ -506,8 +506,8 @@ struct EQView: View {
                             let name = newPresetName.trimmingCharacters(in: .whitespaces)
                             guard !name.isEmpty else { return }
                             let preampVal: Float? = engine.autoPreamp ? nil : engine.preamp
-                            presetManager.save(name: name, bands: engine.activeBands, preamp: preampVal)
-                            selectedPresetID = presetManager.customPresets.last!.id
+                            let saved = presetManager.save(name: name, bands: engine.activeBands, preamp: preampVal)
+                            selectedPresetID = saved.id
                             showingSavePopover = false
                         }
                         .buttonStyle(.borderedProminent)
